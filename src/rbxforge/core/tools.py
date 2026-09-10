@@ -19,6 +19,7 @@ class ToolCall:
     name: str
     arguments: dict[str, Any]
     call_id: str | None = None
+    thought_signature: bytes | None = None
 
 
 @dataclass(frozen=True)

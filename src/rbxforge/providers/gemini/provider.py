@@ -1,3 +1,4 @@
+import base64
 import json
 
 from rbxforge.core.agent import ToolModelResponse
@@ -56,18 +57,28 @@ class GeminiProvider:
                     marker = None
                 calls = marker.get("__rbxforge_function_calls__") if isinstance(marker, dict) else None
                 if calls is not None:
+                    parts = []
+                    for item in calls:
+                        part_dict = {
+                            "function_call": {
+                                "name": item["name"],
+                                "args": item.get("args", {}),
+                                **({"id": item["id"]} if item.get("id") else {}),
+                            }
+                        }
+                        sig = item.get("thought_signature")
+                        if sig is not None:
+                            if isinstance(sig, str):
+                                try:
+                                    part_dict["thought_signature"] = base64.b64decode(sig)
+                                except Exception:
+                                    part_dict["thought_signature"] = sig.encode("utf-8")
+                            elif isinstance(sig, bytes):
+                                part_dict["thought_signature"] = sig
+                        parts.append(part_dict)
                     contents.append({
                         "role": "model",
-                        "parts": [
-                            {
-                                "function_call": {
-                                    "name": item["name"],
-                                    "args": item.get("args", {}),
-                                    **({"id": item["id"]} if item.get("id") else {}),
-                                }
-                            }
-                            for item in calls
-                        ],
+                        "parts": parts,
                     })
                     continue
             if message.role == "tool":
@@ -124,11 +135,18 @@ class GeminiProvider:
                 for part in getattr(content, "parts", []) or []:
                     function_call = getattr(part, "function_call", None)
                     if function_call is not None:
+                        sig = getattr(part, "thought_signature", None)
+                        if isinstance(sig, str):
+                            try:
+                                sig = base64.b64decode(sig)
+                            except Exception:
+                                sig = sig.encode("utf-8")
                         calls.append(
                             ToolCall(
                                 str(getattr(function_call, "name", "")),
                                 dict(getattr(function_call, "args", {}) or {}),
                                 getattr(function_call, "id", None),
+                                thought_signature=sig,
                             )
                         )
             return ToolModelResponse(text=getattr(response, "text", "") or "", tool_calls=calls)
