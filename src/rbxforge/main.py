@@ -12,6 +12,7 @@ from .core.tools import GodotToolExecutor
 from .core.router import LLMRouter
 from .godot.analyzer import GodotProjectAnalyzer
 from .godot.files import GodotFileService
+from .godot.runner import GodotRunner
 from .providers.registry import build_providers
 
 
@@ -29,9 +30,15 @@ def build_request(project_root: str | Path, prompt: str) -> LLMRequest:
     project = analyzer.scan()
     context = analyzer.build_context(project)
     content = (
-        "You are RBXForge, an AI assistant for Godot development. "
-        "Use the following project context when relevant.\n\n"
-        f"{context}\n\n[User Request]\n{prompt}"
+        "You are RBXForge, an AI assistant for Godot development.\n"
+        "You are debugging a Godot 4 project.\n"
+        "Do not assume the cause.\n"
+        "Inspect the actual files first.\n"
+        "Use the runtime error as evidence.\n"
+        "Make the smallest correct change.\n"
+        "Do not rewrite unrelated code.\n"
+        "After changing code, run Godot again and verify the result.\n\n"
+        f"Project Context:\n{context}\n\n[User Request]\n{prompt}"
     )
     return LLMRequest([Message("user", content)])
 
@@ -45,16 +52,101 @@ def confirm_tool_action(operation: str, path: str, details: str) -> bool:
     return answer in {"y", "yes"}
 
 
-def run_agent(project_root: str | Path, prompt: str, gemini_provider, max_tool_calls: int = 12) -> str:
+def run_agent(project_root: str | Path, prompt: str, gemini_provider, max_tool_calls: int = 12, runner: GodotRunner | None = None) -> str:
     request = build_request(project_root, prompt)
     service = GodotFileService(project_root)
-    executor = GodotToolExecutor(service, confirm_tool_action)
+    executor = GodotToolExecutor(service, confirm_tool_action, runner=runner)
     agent = ToolAgent(
         lambda req, tools: gemini_provider.generate_with_tools(req, tools),
         max_tool_calls=max_tool_calls,
     )
     response = asyncio.run(agent.run(request, executor))
     return response.text
+
+
+def run_check(project_root: str | Path, settings: Settings) -> str:
+    runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout)
+    result = runner.run(project_root)
+    lines = []
+    if result.success:
+        if result.errors:
+            lines.append("✓ Godot verification passed (with warnings):")
+        else:
+            lines.append("✓ Godot verification passed successfully:")
+    else:
+        if result.timed_out:
+            lines.append("✗ Godot verification timed out:")
+        else:
+            lines.append("✗ Godot verification failed:")
+
+    if result.exit_code is not None:
+        lines.append(f"Exit code: {result.exit_code}")
+    if result.duration_seconds:
+        lines.append(f"Duration: {result.duration_seconds}s")
+
+    if result.errors:
+        lines.append("\nParsed Diagnostics:")
+        for err in result.errors:
+            loc = f" in {err.file}" if err.file else ""
+            loc += f":{err.line}" if err.line else ""
+            loc += f":{err.column}" if err.column else ""
+            lines.append(f" - [{err.severity.upper()}]{loc}: {err.message}")
+
+    if result.stderr:
+        lines.append(f"\nStderr Output:\n{result.stderr}")
+    elif result.stdout and not result.success:
+        lines.append(f"\nStdout Output:\n{result.stdout}")
+
+    return "\n".join(lines)
+
+
+def run_repair(project_root: str | Path, settings: Settings, provider: str | None = None) -> str:
+    providers = build_providers(settings)
+    gemini_provider = providers.get("gemini")
+    runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout)
+
+    last_errors = None
+    repairs_performed = 0
+
+    for attempt in range(1, settings.max_repair_attempts + 1):
+        check_res = runner.run(project_root)
+        if check_res.success:
+            if repairs_performed > 0:
+                return f"✓ Godot verification passed\n✓ {repairs_performed} repair(s) performed\n✓ Project completed successfully"
+            else:
+                return "✓ Godot verification passed. No repairs needed."
+
+        fatal_errors = [e for e in check_res.errors if e.severity == "error"]
+        if not fatal_errors and check_res.errors:
+            return f"✓ Godot verification passed (with warnings)\nStderr:\n{check_res.stderr}"
+
+        current_errors_str = check_res.stderr or check_res.stdout
+        if current_errors_str == last_errors and attempt > 1:
+            return f"Repair stopped early: Error persisted unchanged after attempt {attempt - 1}.\nLast error:\n{current_errors_str}"
+        last_errors = current_errors_str
+
+        print(f"\n[Repair Attempt {attempt}/{settings.max_repair_attempts}]")
+        print(f"Error detected during Godot execution:\n{current_errors_str}\n")
+
+        prompt = (
+            f"Godot execution failed on attempt {attempt}/{settings.max_repair_attempts}.\n"
+            f"Error output:\n{current_errors_str}\n\n"
+            "Please analyze the runtime error, inspect project files, and fix the issue."
+        )
+
+        if gemini_provider is not None and provider in {None, "gemini"}:
+            output = run_agent(project_root, prompt, gemini_provider, settings.max_tool_calls, runner=runner)
+            print(output)
+            repairs_performed += 1
+        else:
+            return f"Repair requires Gemini provider with function calling capability. Stderr: {check_res.stderr}"
+
+    # Final check after max attempts
+    final_check = runner.run(project_root)
+    if final_check.success:
+        return f"✓ Godot verification passed\n✓ {repairs_performed} repair(s) performed\n✓ Project completed successfully"
+
+    return f"Repair limit reached ({settings.max_repair_attempts} attempts). The project still has errors:\n{final_check.stderr or final_check.stdout}"
 
 
 def run(project_root: str | Path, prompt: str, complexity: str, provider: str | None, router: LLMRouter | None = None) -> str:
@@ -95,6 +187,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project", default=None, help="Path to a Godot project containing project.godot (defaults to the nearest one found from the current directory)")
     parser.add_argument("--complexity", choices=[item.value for item in TaskComplexity], default=None)
     parser.add_argument("--provider", choices=["ollama", "gemini"], default=None)
+    parser.add_argument("--check", action="store_true", help="Run Godot project in headless mode to verify scripts and capture errors")
+    parser.add_argument("--repair", action="store_true", help="Run AI-assisted Godot verification and repair loop")
     return parser
 
 
@@ -113,9 +207,21 @@ def resolve_project_root(parser: argparse.ArgumentParser, project_flag: str | No
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    settings = Settings.from_env()
+    try:
+        settings = Settings.from_env()
+    except ValueError as exc:
+        parser.error(str(exc))
     complexity = args.complexity or settings.default_complexity.value
     project_root = resolve_project_root(parser, args.project)
+
+    if args.check:
+        print(run_check(project_root, settings))
+        return
+
+    if args.repair:
+        print(run_repair(project_root, settings, args.provider))
+        return
+
     if args.prompt is None:
         run_interactive(project_root, complexity, args.provider)
         return

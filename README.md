@@ -35,7 +35,40 @@ Gemini + Godot tools
                          project files
 ```
 
-Phase 1 does **not** run Godot, inspect runtime logs, control the Godot Editor, or autonomously repair errors. Those are planned for later phases.
+## Phase 2: Godot Runtime Verification + AI Debugging & Repair Loop
+
+Phase 2 adds headless Godot runtime verification and an AI-assisted repair loop.
+
+### Phase 2 Features
+- **Headless Godot Execution**: Run your Godot project in headless mode via `rbxforge --check`.
+- **Error Parser**: Automatically extract structured diagnostics (file, line, column, error message, severity) from Godot 4 logs.
+- **`run_godot` Tool**: Read-only tool allowing the AI agent to run Godot during conversation to verify script behavior.
+- **AI Repair Loop**: Use `rbxforge --repair` to automatically execute Godot, capture runtime errors, inspect source files, apply targeted fixes with mandatory user confirmation, and re-verify until success or the attempt limit is reached.
+- **Safety & Confirmation**: Mutation tools (`create_file`, `write_file`, `delete_file`) remain strictly protected and require user confirmation before applying fixes.
+
+### Phase 2 Configuration Environment Variables
+- `GODOFORGE_GODOT_PATH` (default: `godot`): Path to Godot 4 executable.
+- `GODOFORGE_GODOT_TIMEOUT` (default: `30`): Maximum process execution timeout in seconds.
+- `GODOFORGE_MAX_REPAIR_ATTEMPTS` (default: `3`): Maximum repair attempts during `--repair`.
+
+### Phase 2 Usage
+
+Run a headless check on the Godot project:
+```bash
+rbxforge --check
+```
+
+Run AI-assisted repair loop:
+```bash
+rbxforge --repair
+```
+
+### Phase 2 Limitations
+Phase 2 does **NOT** provide:
+- Godot Editor UI control
+- Scene Tree live control
+- Inspector automation
+- Visual gameplay testing or mouse/keyboard input automation
 
 ## Setup
 
