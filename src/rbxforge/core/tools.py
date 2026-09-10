@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from rbxforge.godot.files import Confirmation, GodotFileService, FileToolError
+from rbxforge.godot.runner import GodotRunner
 
 
 @dataclass(frozen=True)
@@ -83,11 +84,18 @@ class GodotToolExecutor:
             {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
             False,
         ),
+        ToolDefinition(
+            "run_godot",
+            "Execute the Godot project in headless mode to verify scripts and capture runtime errors.",
+            {"type": "object", "properties": {"args": {"type": "array", "items": {"type": "string"}}}},
+            True,
+        ),
     )
 
-    def __init__(self, service: GodotFileService, confirm: Confirmation):
+    def __init__(self, service: GodotFileService, confirm: Confirmation, runner: GodotRunner | None = None):
         self.service = service
         self.confirm = confirm
+        self.runner = runner or GodotRunner()
 
     def definitions(self) -> list[ToolDefinition]:
         return list(self._DEFINITIONS)
@@ -121,6 +129,31 @@ class GodotToolExecutor:
             if call.name == "delete_file":
                 result = self.service.delete_file(self._required(args, "path"), self.confirm)
                 return ToolResult(call.name, True, result.__dict__)
+            if call.name == "run_godot":
+                extra_args = args.get("args")
+                if not isinstance(extra_args, list):
+                    extra_args = None
+                run_res = self.runner.run(self.service.root, extra_args)
+                errs_data = [
+                    {
+                        "message": e.message,
+                        "file": e.file,
+                        "line": e.line,
+                        "column": e.column,
+                        "severity": e.severity,
+                    }
+                    for e in run_res.errors
+                ]
+                payload = {
+                    "success": run_res.success,
+                    "exit_code": run_res.exit_code,
+                    "timed_out": run_res.timed_out,
+                    "duration_seconds": run_res.duration_seconds,
+                    "errors": errs_data,
+                    "stdout": run_res.stdout,
+                    "stderr": run_res.stderr,
+                }
+                return ToolResult(call.name, True, payload)
             return ToolResult(call.name, False, error=f"Unknown tool: {call.name}")
         except (FileToolError, TypeError, KeyError) as exc:
             return ToolResult(call.name, False, error=str(exc))

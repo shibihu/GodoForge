@@ -26,9 +26,9 @@ def test_tool_executor_definitions_are_stable_and_mark_mutations(tmp_path):
     executor = GodotToolExecutor(GodotFileService(make_project(tmp_path)), lambda *_: False)
     definitions = executor.definitions()
     assert [item.name for item in definitions] == [
-        "list_files", "read_file", "search_code", "create_file", "write_file", "delete_file"
+        "list_files", "read_file", "search_code", "create_file", "write_file", "delete_file", "run_godot"
     ]
-    assert [item.read_only for item in definitions] == [True, True, True, False, False, False]
+    assert [item.read_only for item in definitions] == [True, True, True, False, False, False, True]
 
 
 def test_tool_executor_does_not_bypass_confirmation(tmp_path):
