@@ -36,13 +36,32 @@ class GodotToolExecutor:
         ToolDefinition(
             "list_files",
             "List project-relative files in a directory.",
-            {"type": "object", "properties": {"directory": {"type": "string"}}},
+            {
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": "Project-relative directory path to list (defaults to '.').",
+                    }
+                },
+                "additionalProperties": False,
+            },
             True,
         ),
         ToolDefinition(
             "read_file",
             "Read a bounded UTF-8 project file.",
-            {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Project-relative file path to read.",
+                    }
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
             True,
         ),
         ToolDefinition(
@@ -51,10 +70,17 @@ class GodotToolExecutor:
             {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
-                    "directory": {"type": "string"},
+                    "query": {
+                        "type": "string",
+                        "description": "Text query to search for.",
+                    },
+                    "directory": {
+                        "type": "string",
+                        "description": "Project-relative directory to search in (defaults to '.').",
+                    },
                 },
                 "required": ["query"],
+                "additionalProperties": False,
             },
             True,
         ),
@@ -63,8 +89,18 @@ class GodotToolExecutor:
             "Create a new project file after explicit confirmation.",
             {
                 "type": "object",
-                "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Project-relative path where the file will be created.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Text content to write to the new file.",
+                    },
+                },
                 "required": ["path", "content"],
+                "additionalProperties": False,
             },
             False,
         ),
@@ -73,21 +109,51 @@ class GodotToolExecutor:
             "Replace a project file after explicit confirmation; existing files are backed up.",
             {
                 "type": "object",
-                "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Project-relative path of the file to replace.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "New text content to write to the file.",
+                    },
+                },
                 "required": ["path", "content"],
+                "additionalProperties": False,
             },
             False,
         ),
         ToolDefinition(
             "delete_file",
             "Delete a project file after explicit confirmation.",
-            {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Project-relative path of the file to delete.",
+                    }
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
             False,
         ),
         ToolDefinition(
             "run_godot",
             "Execute the Godot project in headless mode to verify scripts and capture runtime errors.",
-            {"type": "object", "properties": {"args": {"type": "array", "items": {"type": "string"}}}},
+            {
+                "type": "object",
+                "properties": {
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional command line arguments to pass to Godot.",
+                    }
+                },
+                "additionalProperties": False,
+            },
             True,
         ),
     )

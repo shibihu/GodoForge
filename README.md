@@ -40,9 +40,11 @@ Gemini + Godot tools
 Phase 2 adds headless Godot runtime verification and an AI-assisted repair loop.
 
 ### Phase 2 Features
-- **Headless Godot Execution**: Run your Godot project in headless mode via `rbxforge --check`.
-- **Error Parser**: Automatically extract structured diagnostics (file, line, column, error message, severity) from Godot 4 logs.
-- **`run_godot` Tool**: Read-only tool allowing the AI agent to run Godot during conversation to verify script behavior.
+- **Project Validation**: Validate/import Godot project in headless mode via `rbxforge --check`.
+- **Headless Execution**: Run main scene in headless mode via `rbxforge --run`.
+- **Error Parser**: Automatically extract structured diagnostics (file, line, column, error message, error_type, severity) with deduplication from Godot 4 logs.
+- **Collision-Safe Backups**: Overwrites create `.rbxforge.bak`, `.rbxforge.bak.1`, `.rbxforge.bak.2`, etc., ensuring existing backups are never silently destroyed.
+- **`run_godot` Tool**: Read-only tool with explicit parameter schemas allowing the AI agent to run Godot during conversation.
 - **AI Repair Loop**: Use `rbxforge --repair` to automatically execute Godot, capture runtime errors, inspect source files, apply targeted fixes with mandatory user confirmation, and re-verify until success or the attempt limit is reached.
 - **Safety & Confirmation**: Mutation tools (`create_file`, `write_file`, `delete_file`) remain strictly protected and require user confirmation before applying fixes.
 
@@ -50,12 +52,18 @@ Phase 2 adds headless Godot runtime verification and an AI-assisted repair loop.
 - `GODOFORGE_GODOT_PATH` (default: `godot`): Path to Godot 4 executable.
 - `GODOFORGE_GODOT_TIMEOUT` (default: `30`): Maximum process execution timeout in seconds.
 - `GODOFORGE_MAX_REPAIR_ATTEMPTS` (default: `3`): Maximum repair attempts during `--repair`.
+- `GODOFORGE_MAX_OUTPUT_BYTES` (default: `20000`): Maximum stdout/stderr output size limit.
 
 ### Phase 2 Usage
 
-Run a headless check on the Godot project:
+Validate project structure headlessly:
 ```bash
 rbxforge --check
+```
+
+Run main scene headlessly and capture errors:
+```bash
+rbxforge --run
 ```
 
 Run AI-assisted repair loop:

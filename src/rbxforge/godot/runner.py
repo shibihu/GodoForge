@@ -10,37 +10,18 @@ from .models import GodotRunResult
 
 
 class GodotRunner:
-    MAX_OUTPUT_LEN = 20000
-
-    def __init__(self, godot_path: str = "godot", timeout: int = 30):
+    def __init__(self, godot_path: str = "godot", timeout: int = 30, max_output_bytes: int = 20000):
         self.godot_path = godot_path
         self.timeout = timeout
+        self.max_output_bytes = max_output_bytes
 
-    @classmethod
-    def truncate_output(cls, output: str) -> str:
-        if len(output) > cls.MAX_OUTPUT_LEN:
-            return output[: cls.MAX_OUTPUT_LEN] + "\n... output truncated ..."
+    def truncate_output(self, output: str) -> str:
+        if len(output) > self.max_output_bytes:
+            half = self.max_output_bytes // 2
+            return output[:half] + "\n\n... [output truncated] ...\n\n" + output[-half:]
         return output
 
-    def run(self, project_root: str | Path, args: list[str] | None = None) -> GodotRunResult:
-        root = Path(project_root).expanduser().resolve()
-        if not (root / "project.godot").is_file():
-            return GodotRunResult(
-                success=False,
-                exit_code=1,
-                stdout="",
-                stderr=f"Invalid Godot project root: {root} (missing project.godot)",
-                duration_seconds=0.0,
-                timed_out=False,
-                errors=GodotErrorParser.parse("", f"ERROR: Invalid Godot project root: {root}")
-            )
-
-        cmd = [self.godot_path, "--path", str(root), "--headless"]
-        if args:
-            cmd.extend(args)
-        else:
-            cmd.append("--editor")  # default headless check/import validate
-
+    def _execute(self, root: Path, cmd: list[str]) -> GodotRunResult:
         start_time = time.monotonic()
         try:
             process = subprocess.Popen(
@@ -59,7 +40,6 @@ class GodotRunner:
                 exit_code = process.returncode
 
                 parsed_errors = GodotErrorParser.parse(stdout, stderr)
-                # Success if exit_code is 0 and no error severity parsed
                 has_fatal_errors = any(e.severity == "error" for e in parsed_errors)
                 success = (exit_code == 0) and not has_fatal_errors
 
@@ -88,7 +68,6 @@ class GodotRunner:
                     timed_out=True,
                     errors=parsed_errors,
                 )
-
         except FileNotFoundError:
             return GodotRunResult(
                 success=False,
@@ -109,3 +88,41 @@ class GodotRunner:
                 timed_out=False,
                 errors=[],
             )
+
+    def check_project(self, project_root: str | Path) -> GodotRunResult:
+        """Validate/import the Godot project in headless mode without running the main scene."""
+        root = Path(project_root).expanduser().resolve()
+        if not (root / "project.godot").is_file():
+            return GodotRunResult(
+                success=False,
+                exit_code=1,
+                stdout="",
+                stderr=f"Invalid Godot project root: {root} (missing project.godot)",
+                duration_seconds=0.0,
+                timed_out=False,
+                errors=GodotErrorParser.parse("", f"ERROR: Invalid Godot project root: {root}")
+            )
+        cmd = [self.godot_path, "--path", str(root), "--headless", "--editor", "--quit"]
+        return self._execute(root, cmd)
+
+    def run_project(self, project_root: str | Path, args: list[str] | None = None) -> GodotRunResult:
+        """Run the main scene of the Godot project in headless mode."""
+        root = Path(project_root).expanduser().resolve()
+        if not (root / "project.godot").is_file():
+            return GodotRunResult(
+                success=False,
+                exit_code=1,
+                stdout="",
+                stderr=f"Invalid Godot project root: {root} (missing project.godot)",
+                duration_seconds=0.0,
+                timed_out=False,
+                errors=GodotErrorParser.parse("", f"ERROR: Invalid Godot project root: {root}")
+            )
+        cmd = [self.godot_path, "--path", str(root), "--headless"]
+        if args:
+            cmd.extend(args)
+        return self._execute(root, cmd)
+
+    def run(self, project_root: str | Path, args: list[str] | None = None) -> GodotRunResult:
+        """Backwards compatible run method."""
+        return self.run_project(project_root, args)

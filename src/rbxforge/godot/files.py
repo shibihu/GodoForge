@@ -180,7 +180,7 @@ class GodotFileService:
         backup_relative: str | None = None
         try:
             if existed:
-                backup = Path(f"{path}.rbxforge.bak")
+                backup = self._get_unique_backup_path(path)
                 self._atomic_copy(path, backup)
                 backup_relative = self._relative(backup)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,6 +206,18 @@ class GodotFileService:
         except OSError as exc:
             raise FileToolError(f"Could not delete file: {relative}") from exc
         return OperationResult("delete_file", relative, True)
+
+    @staticmethod
+    def _get_unique_backup_path(path: Path) -> Path:
+        base_backup = Path(f"{path}.rbxforge.bak")
+        if not base_backup.exists():
+            return base_backup
+        counter = 1
+        while True:
+            candidate = Path(f"{path}.rbxforge.bak.{counter}")
+            if not candidate.exists():
+                return candidate
+            counter += 1
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:

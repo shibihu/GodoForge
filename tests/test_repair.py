@@ -11,8 +11,8 @@ def test_run_check_success(tmp_path):
     settings = Settings(godot_path="godot")
 
     mock_runner = MagicMock()
-    mock_runner.run.return_value = GodotRunResult(
-        success=True, exit_code=0, stdout="OK", stderr="", duration_seconds=0.1
+    mock_runner.check_project.return_value = GodotRunResult(
+        success=True, exit_code=0, stdout="OK", stderr="", duration_seconds=0.1, errors=[]
     )
 
     with pytest.MonkeyPatch.context() as mp:
@@ -26,7 +26,7 @@ def test_run_repair_success_without_repairs(tmp_path):
     settings = Settings(godot_path="godot")
 
     mock_runner = MagicMock()
-    mock_runner.run.return_value = GodotRunResult(
+    mock_runner.run_project.return_value = GodotRunResult(
         success=True, exit_code=0, stdout="OK", stderr="", duration_seconds=0.1
     )
 
@@ -41,7 +41,7 @@ def test_run_repair_stops_when_error_persists(tmp_path):
     settings = Settings(godot_path="godot", max_repair_attempts=3)
 
     mock_runner = MagicMock()
-    mock_runner.run.return_value = GodotRunResult(
+    mock_runner.run_project.return_value = GodotRunResult(
         success=False,
         exit_code=1,
         stdout="",
