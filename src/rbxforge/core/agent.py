@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -35,15 +36,19 @@ class ToolAgent:
             if not response.tool_calls:
                 return LLMResponse(response.text, "gemini", request.model or "", None)
 
+            function_calls = []
+            for call in response.tool_calls:
+                call_dict = {"name": call.name, "args": call.arguments, "id": call.call_id}
+                if call.thought_signature is not None:
+                    call_dict["thought_signature"] = base64.b64encode(call.thought_signature).decode("ascii")
+                function_calls.append(call_dict)
+
             messages.append(
                 Message(
                     "model",
                     json.dumps(
                         {
-                            "__rbxforge_function_calls__": [
-                                {"name": call.name, "args": call.arguments, "id": call.call_id}
-                                for call in response.tool_calls
-                            ]
+                            "__rbxforge_function_calls__": function_calls
                         },
                         ensure_ascii=False,
                     ),
