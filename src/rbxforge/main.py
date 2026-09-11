@@ -64,20 +64,44 @@ def run_agent(project_root: str | Path, prompt: str, gemini_provider, max_tool_c
     return response.text
 
 
+def _snapshot_project_files(project_root: str | Path) -> dict[str, str]:
+    try:
+        service = GodotFileService(project_root)
+        file_map = {}
+        for rel_path in service.list_files():
+            try:
+                file_map[rel_path] = service.read_file(rel_path)
+            except Exception:
+                pass
+        return file_map
+    except Exception:
+        return {}
+
+
 def run_check(project_root: str | Path, settings: Settings) -> str:
     runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout, max_output_bytes=settings.godot_max_output_bytes)
     result = runner.check_project(project_root)
+    return _format_run_result(result, "validation")
+
+
+def run_project_cmd(project_root: str | Path, settings: Settings) -> str:
+    runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout, max_output_bytes=settings.godot_max_output_bytes)
+    result = runner.run_project(project_root)
+    return _format_run_result(result, "execution")
+
+
+def _format_run_result(result, mode_label: str) -> str:
     lines = []
     if result.success:
         if result.errors:
-            lines.append("✓ Godot verification passed (with warnings):")
+            lines.append(f"✓ Godot {mode_label} passed (with warnings):")
         else:
-            lines.append("✓ Godot verification passed successfully:")
+            lines.append(f"✓ Godot {mode_label} passed successfully:")
     else:
         if result.timed_out:
-            lines.append("✗ Godot verification timed out:")
+            lines.append(f"✗ Godot {mode_label} timed out:")
         else:
-            lines.append("✗ Godot verification failed:")
+            lines.append(f"✗ Godot {mode_label} failed:")
 
     if result.exit_code is not None:
         lines.append(f"Exit code: {result.exit_code}")
@@ -90,7 +114,7 @@ def run_check(project_root: str | Path, settings: Settings) -> str:
             loc = f" in {err.file}" if err.file else ""
             loc += f":{err.line}" if err.line else ""
             loc += f":{err.column}" if err.column else ""
-            lines.append(f" - [{err.severity.upper()}]{loc}: {err.message}")
+            lines.append(f" - [{err.severity.upper()}][{err.error_type}]{loc}: {err.message}")
 
     if result.stderr:
         lines.append(f"\nStderr Output:\n{result.stderr}")
@@ -135,9 +159,15 @@ def run_repair(project_root: str | Path, settings: Settings, provider: str | Non
         )
 
         if gemini_provider is not None and provider in {None, "gemini"}:
+            files_before = _snapshot_project_files(project_root)
             output = run_agent(project_root, prompt, gemini_provider, settings.max_tool_calls, runner=runner)
+            files_after = _snapshot_project_files(project_root)
             print(output)
-            repairs_performed += 1
+
+            if files_before != files_after:
+                repairs_performed += 1
+            else:
+                print("\n[Notice] AI agent did not modify any project files on this attempt.")
         else:
             return f"Repair requires Gemini provider with function calling capability. Stderr: {run_res.stderr}"
 
@@ -216,15 +246,11 @@ def main() -> None:
     project_root = resolve_project_root(parser, args.project)
 
     if args.check:
-        runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout, max_output_bytes=settings.godot_max_output_bytes)
-        res = runner.check_project(project_root)
-        print(f"Check success: {res.success}, Exit code: {res.exit_code}\nStderr: {res.stderr}\nStdout: {res.stdout}")
+        print(run_check(project_root, settings))
         return
 
     if args.run:
-        runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout, max_output_bytes=settings.godot_max_output_bytes)
-        res = runner.run_project(project_root)
-        print(f"Run success: {res.success}, Exit code: {res.exit_code}\nStderr: {res.stderr}\nStdout: {res.stdout}")
+        print(run_project_cmd(project_root, settings))
         return
 
     if args.repair:

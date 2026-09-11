@@ -110,11 +110,22 @@ class GeminiProvider:
                 "role": "user" if message.role in {"user", "tool"} else "model",
                 "parts": [{"text": message.content}],
             })
+        def _clean_schema(obj):
+            if isinstance(obj, dict):
+                return {
+                    k: _clean_schema(v)
+                    for k, v in obj.items()
+                    if k not in ("additionalProperties", "additional_properties")
+                }
+            if isinstance(obj, list):
+                return [_clean_schema(item) for item in obj]
+            return obj
+
         declarations = [
             {
                 "name": tool.name,
                 "description": tool.description,
-                "parameters": tool.parameters,
+                "parameters": _clean_schema(tool.parameters),
             }
             for tool in tools
         ]

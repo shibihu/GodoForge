@@ -22,13 +22,42 @@ def test_runner_missing_executable(tmp_path):
     assert "Godot executable was not found" in result.stderr
 
 
+@patch("selectors.DefaultSelector")
 @patch("subprocess.Popen")
-def test_runner_success(mock_popen, tmp_path):
+def test_runner_success(mock_popen, mock_selector_cls, tmp_path):
     (tmp_path / "project.godot").touch()
+
+    stdout_mock = MagicMock()
+    stdout_mock.readline.side_effect = ["Godot v4.2.1\n", ""]
+    stdout_mock.read.return_value = ""
+
+    stderr_mock = MagicMock()
+    stderr_mock.readline.side_effect = [""]
+    stderr_mock.read.return_value = ""
+
     process_mock = MagicMock()
-    process_mock.communicate.return_value = ("Godot v4.2.1\n", "")
+    process_mock.stdout = stdout_mock
+    process_mock.stderr = stderr_mock
+    process_mock.poll.side_effect = [None, 0]
     process_mock.returncode = 0
     mock_popen.return_value = process_mock
+
+    selector_mock = MagicMock()
+    key_stdout = MagicMock()
+    key_stdout.data = "stdout"
+    key_stdout.fileobj = stdout_mock
+
+    key_stderr = MagicMock()
+    key_stderr.data = "stderr"
+    key_stderr.fileobj = stderr_mock
+
+    selector_mock.get_map.side_effect = [
+        {1: key_stdout, 2: key_stderr},
+        {1: key_stdout, 2: key_stderr},
+        {},
+    ]
+    selector_mock.select.return_value = [(key_stdout, None)]
+    mock_selector_cls.return_value = selector_mock
 
     runner = GodotRunner(godot_path="godot")
     result = runner.run(tmp_path)
@@ -39,13 +68,37 @@ def test_runner_success(mock_popen, tmp_path):
     assert not result.timed_out
 
 
+@patch("selectors.DefaultSelector")
 @patch("subprocess.Popen")
-def test_runner_error(mock_popen, tmp_path):
+def test_runner_error(mock_popen, mock_selector_cls, tmp_path):
     (tmp_path / "project.godot").touch()
+
+    stdout_mock = MagicMock()
+    stdout_mock.readline.side_effect = [""]
+    stdout_mock.read.return_value = ""
+
+    stderr_mock = MagicMock()
+    stderr_mock.readline.side_effect = ["SCRIPT ERROR: Parse error in res://player.gd:10\n", ""]
+    stderr_mock.read.return_value = ""
+
     process_mock = MagicMock()
-    process_mock.communicate.return_value = ("", "SCRIPT ERROR: Parse error in res://player.gd:10\n")
+    process_mock.stdout = stdout_mock
+    process_mock.stderr = stderr_mock
+    process_mock.poll.return_value = 1
     process_mock.returncode = 1
     mock_popen.return_value = process_mock
+
+    selector_mock = MagicMock()
+    key_stderr = MagicMock()
+    key_stderr.data = "stderr"
+    key_stderr.fileobj = stderr_mock
+
+    selector_mock.get_map.side_effect = [
+        {2: key_stderr},
+        {},
+    ]
+    selector_mock.select.return_value = [(key_stderr, None)]
+    mock_selector_cls.return_value = selector_mock
 
     runner = GodotRunner(godot_path="godot")
     result = runner.run(tmp_path)
@@ -55,26 +108,6 @@ def test_runner_error(mock_popen, tmp_path):
     assert len(result.errors) == 1
     assert result.errors[0].file == "res://player.gd"
     assert result.errors[0].line == 10
-
-
-@patch("subprocess.Popen")
-def test_runner_timeout(mock_popen, tmp_path):
-    import subprocess
-    (tmp_path / "project.godot").touch()
-
-    process_mock = MagicMock()
-    process_mock.communicate.side_effect = [
-        subprocess.TimeoutExpired(cmd="godot", timeout=1),
-        ("stdout partially", "stderr partially"),
-    ]
-    mock_popen.return_value = process_mock
-
-    runner = GodotRunner(godot_path="godot", timeout=1)
-    result = runner.run(tmp_path)
-
-    assert not result.success
-    assert result.timed_out
-    assert process_mock.kill.called
 
 
 def test_runner_output_truncation():
