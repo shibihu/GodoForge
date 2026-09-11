@@ -65,8 +65,8 @@ def run_agent(project_root: str | Path, prompt: str, gemini_provider, max_tool_c
 
 
 def run_check(project_root: str | Path, settings: Settings) -> str:
-    runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout)
-    result = runner.run(project_root)
+    runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout, max_output_bytes=settings.godot_max_output_bytes)
+    result = runner.check_project(project_root)
     lines = []
     if result.success:
         if result.errors:
@@ -103,24 +103,24 @@ def run_check(project_root: str | Path, settings: Settings) -> str:
 def run_repair(project_root: str | Path, settings: Settings, provider: str | None = None) -> str:
     providers = build_providers(settings)
     gemini_provider = providers.get("gemini")
-    runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout)
+    runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout, max_output_bytes=settings.godot_max_output_bytes)
 
     last_errors = None
     repairs_performed = 0
 
     for attempt in range(1, settings.max_repair_attempts + 1):
-        check_res = runner.run(project_root)
-        if check_res.success:
+        run_res = runner.run_project(project_root)
+        if run_res.success:
             if repairs_performed > 0:
                 return f"✓ Godot verification passed\n✓ {repairs_performed} repair(s) performed\n✓ Project completed successfully"
             else:
                 return "✓ Godot verification passed. No repairs needed."
 
-        fatal_errors = [e for e in check_res.errors if e.severity == "error"]
-        if not fatal_errors and check_res.errors:
-            return f"✓ Godot verification passed (with warnings)\nStderr:\n{check_res.stderr}"
+        fatal_errors = [e for e in run_res.errors if e.severity == "error"]
+        if not fatal_errors and run_res.errors:
+            return f"✓ Godot verification passed (with warnings)\nStderr:\n{run_res.stderr}"
 
-        current_errors_str = check_res.stderr or check_res.stdout
+        current_errors_str = run_res.stderr or run_res.stdout
         if current_errors_str == last_errors and attempt > 1:
             return f"Repair stopped early: Error persisted unchanged after attempt {attempt - 1}.\nLast error:\n{current_errors_str}"
         last_errors = current_errors_str
@@ -139,14 +139,14 @@ def run_repair(project_root: str | Path, settings: Settings, provider: str | Non
             print(output)
             repairs_performed += 1
         else:
-            return f"Repair requires Gemini provider with function calling capability. Stderr: {check_res.stderr}"
+            return f"Repair requires Gemini provider with function calling capability. Stderr: {run_res.stderr}"
 
     # Final check after max attempts
-    final_check = runner.run(project_root)
-    if final_check.success:
+    final_run = runner.run_project(project_root)
+    if final_run.success:
         return f"✓ Godot verification passed\n✓ {repairs_performed} repair(s) performed\n✓ Project completed successfully"
 
-    return f"Repair limit reached ({settings.max_repair_attempts} attempts). The project still has errors:\n{final_check.stderr or final_check.stdout}"
+    return f"Repair limit reached ({settings.max_repair_attempts} attempts). The project still has errors:\n{final_run.stderr or final_run.stdout}"
 
 
 def run(project_root: str | Path, prompt: str, complexity: str, provider: str | None, router: LLMRouter | None = None) -> str:
@@ -187,7 +187,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project", default=None, help="Path to a Godot project containing project.godot (defaults to the nearest one found from the current directory)")
     parser.add_argument("--complexity", choices=[item.value for item in TaskComplexity], default=None)
     parser.add_argument("--provider", choices=["ollama", "gemini"], default=None)
-    parser.add_argument("--check", action="store_true", help="Run Godot project in headless mode to verify scripts and capture errors")
+    parser.add_argument("--check", action="store_true", help="Validate/load Godot project in headless mode without executing main scene")
+    parser.add_argument("--run", action="store_true", help="Run Godot project main scene in headless mode and capture execution errors")
     parser.add_argument("--repair", action="store_true", help="Run AI-assisted Godot verification and repair loop")
     return parser
 
@@ -215,7 +216,15 @@ def main() -> None:
     project_root = resolve_project_root(parser, args.project)
 
     if args.check:
-        print(run_check(project_root, settings))
+        runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout, max_output_bytes=settings.godot_max_output_bytes)
+        res = runner.check_project(project_root)
+        print(f"Check success: {res.success}, Exit code: {res.exit_code}\nStderr: {res.stderr}\nStdout: {res.stdout}")
+        return
+
+    if args.run:
+        runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout, max_output_bytes=settings.godot_max_output_bytes)
+        res = runner.run_project(project_root)
+        print(f"Run success: {res.success}, Exit code: {res.exit_code}\nStderr: {res.stderr}\nStdout: {res.stdout}")
         return
 
     if args.repair:

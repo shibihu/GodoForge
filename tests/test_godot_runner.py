@@ -79,6 +79,7 @@ def test_runner_timeout(mock_popen, tmp_path):
 
 def test_runner_output_truncation():
     long_output = "a" * 25000
-    truncated = GodotRunner.truncate_output(long_output)
+    runner = GodotRunner()
+    truncated = runner.truncate_output(long_output)
     assert len(truncated) < 25000
-    assert "... output truncated ..." in truncated
+    assert "... [output truncated] ..." in truncated

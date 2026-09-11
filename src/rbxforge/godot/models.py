@@ -31,6 +31,7 @@ class GodotError:
     line: int | None = None
     column: int | None = None
     severity: str = "error"
+    error_type: str = "general"
     raw_output: str = ""
 
 

@@ -17,9 +17,17 @@ class Settings:
     godot_path: str = "godot"
     godot_timeout: int = 30
     max_repair_attempts: int = 3
+    godot_max_output_bytes: int = 20000
 
     @classmethod
     def from_env(cls) -> "Settings":
+        load_dotenv()
+        try:
+            godot_max_output_bytes = int(os.getenv("GODOFORGE_MAX_OUTPUT_BYTES", str(cls.godot_max_output_bytes)))
+            if godot_max_output_bytes <= 0:
+                raise ValueError("godot_max_output_bytes must be positive")
+        except ValueError as exc:
+            raise ValueError(f"Invalid GODOFORGE_MAX_OUTPUT_BYTES: {exc}") from exc
         load_dotenv()
         try:
             max_tool_calls = int(os.getenv("RBXFORGE_MAX_TOOL_CALLS", str(cls.max_tool_calls)))
@@ -50,4 +58,5 @@ class Settings:
             godot_path=os.getenv("GODOFORGE_GODOT_PATH", cls.godot_path),
             godot_timeout=godot_timeout,
             max_repair_attempts=max_repair_attempts,
+            godot_max_output_bytes=godot_max_output_bytes,
         )
