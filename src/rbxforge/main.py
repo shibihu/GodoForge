@@ -5,8 +5,8 @@ import asyncio
 from pathlib import Path
 
 from .config import Settings
-from .core.llm.errors import ProviderError
 from .core.agent import ToolAgent
+from .core.llm.errors import ProviderError
 from .core.llm.models import LLMRequest, Message, TaskComplexity
 from .core.tools import GodotToolExecutor
 from .core.router import LLMRouter
@@ -162,9 +162,14 @@ def run_repair(project_root: str | Path, settings: Settings, provider: str | Non
 
         if gemini_provider is not None and provider in {None, "gemini"}:
             files_before = _snapshot_project_files(project_root)
-            output = run_agent(project_root, prompt, gemini_provider, settings.max_tool_calls, runner=runner)
+            try:
+                output = run_agent(project_root, prompt, gemini_provider, settings.max_tool_calls, runner=runner)
+                print(output)
+            except ProviderError as exc:
+                print(f"\n⚠ Gemini API error: {exc.message}")
+                print("Retry attempts exhausted or provider failure occurred. Repair could not be completed.")
+
             files_after = _snapshot_project_files(project_root)
-            print(output)
 
             if files_before != files_after:
                 repairs_performed += 1

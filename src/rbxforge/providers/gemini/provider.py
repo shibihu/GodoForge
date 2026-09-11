@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 
@@ -136,37 +137,59 @@ class GeminiProvider:
         }
         if request.max_tokens is not None:
             config["max_output_tokens"] = request.max_tokens
-        try:
-            models = getattr(client, "aio", client).models
-            response = await models.generate_content(
-                model=request.model or self.model, contents=contents, config=config
-            )
-            calls: list[ToolCall] = []
-            for candidate in getattr(response, "candidates", []) or []:
-                content = getattr(candidate, "content", None)
-                for part in getattr(content, "parts", []) or []:
-                    function_call = getattr(part, "function_call", None)
-                    if function_call is not None:
-                        sig = getattr(part, "thought_signature", None)
-                        if isinstance(sig, str):
-                            try:
-                                sig = base64.b64decode(sig)
-                            except Exception:
-                                sig = sig.encode("utf-8")
-                        calls.append(
-                            ToolCall(
-                                str(getattr(function_call, "name", "")),
-                                dict(getattr(function_call, "args", {}) or {}),
-                                getattr(function_call, "id", None),
-                                thought_signature=sig,
+        max_attempts = 3
+        backoffs = [2, 4, 8]
+        last_exception = None
+
+        for attempt in range(max_attempts):
+            try:
+                models = getattr(client, "aio", client).models
+                response = await models.generate_content(
+                    model=request.model or self.model, contents=contents, config=config
+                )
+                calls: list[ToolCall] = []
+                text_parts = []
+                for candidate in getattr(response, "candidates", []) or []:
+                    content = getattr(candidate, "content", None)
+                    for part in getattr(content, "parts", []) or []:
+                        text = getattr(part, "text", None)
+                        if text:
+                            text_parts.append(text)
+                        function_call = getattr(part, "function_call", None)
+                        if function_call is not None:
+                            sig = getattr(part, "thought_signature", None)
+                            if isinstance(sig, str):
+                                try:
+                                    sig = base64.b64decode(sig)
+                                except Exception:
+                                    sig = sig.encode("utf-8")
+                            calls.append(
+                                ToolCall(
+                                    str(getattr(function_call, "name", "")),
+                                    dict(getattr(function_call, "args", {}) or {}),
+                                    getattr(function_call, "id", None),
+                                    thought_signature=sig,
+                                )
                             )
-                        )
-            return ToolModelResponse(text=getattr(response, "text", "") or "", tool_calls=calls)
-        except Exception as exc:
-            status = getattr(exc, "status_code", None)
-            text = str(exc)
-            retryable = status == 429 or status is not None and status >= 500 or "429" in text or "RESOURCE_EXHAUSTED" in text
-            raise ProviderError(text, self.name, retryable=retryable, status_code=status) from exc
+                response_text = "".join(text_parts) if text_parts else ""
+                return ToolModelResponse(text=response_text, tool_calls=calls)
+            except Exception as exc:
+                last_exception = exc
+                status = getattr(exc, "status_code", None)
+                text = str(exc)
+                retryable = (
+                    status == 429
+                    or (status is not None and status >= 500)
+                    or "429" in text
+                    or "503" in text
+                    or "RESOURCE_EXHAUSTED" in text
+                    or "UNAVAILABLE" in text
+                    or "DEADLINE_EXCEEDED" in text
+                )
+                if retryable and attempt < max_attempts - 1:
+                    await asyncio.sleep(backoffs[attempt])
+                    continue
+                raise ProviderError(text, self.name, retryable=retryable, status_code=status) from exc
 
     async def health(self) -> bool:
         return bool(self.api_key or self.client)
