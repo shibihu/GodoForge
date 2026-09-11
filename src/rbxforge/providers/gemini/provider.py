@@ -31,17 +31,44 @@ class GeminiProvider:
         config = {"temperature": request.temperature}
         if request.max_tokens is not None:
             config["max_output_tokens"] = request.max_tokens
-        try:
-            models = getattr(client, "aio", client).models
-            response = await models.generate_content(model=request.model or self.model, contents=contents, config=config)
-            metadata = getattr(response, "usage_metadata", None)
-            usage = Usage(getattr(metadata, "prompt_token_count", 0), getattr(metadata, "candidates_token_count", 0)) if metadata else None
-            return LLMResponse(response.text, self.name, request.model or self.model, usage)
-        except Exception as exc:
-            status = getattr(exc, "status_code", None)
-            text = str(exc)
-            retryable = status == 429 or status is not None and status >= 500 or "429" in text or "RESOURCE_EXHAUSTED" in text
-            raise ProviderError(text, self.name, retryable=retryable, status_code=status) from exc
+
+        max_attempts = 3
+        backoffs = [2, 4, 8]
+        last_exception = None
+
+        for attempt in range(max_attempts):
+            try:
+                models = getattr(client, "aio", client).models
+                response = await models.generate_content(model=request.model or self.model, contents=contents, config=config)
+                metadata = getattr(response, "usage_metadata", None)
+                usage = Usage(getattr(metadata, "prompt_token_count", 0), getattr(metadata, "candidates_token_count", 0)) if metadata else None
+
+                text_parts = []
+                for candidate in getattr(response, "candidates", []) or []:
+                    content = getattr(candidate, "content", None)
+                    for part in getattr(content, "parts", []) or []:
+                        text = getattr(part, "text", None)
+                        if text:
+                            text_parts.append(text)
+                res_text = "".join(text_parts) if text_parts else (getattr(response, "text", "") or "")
+                return LLMResponse(res_text, self.name, request.model or self.model, usage)
+            except Exception as exc:
+                last_exception = exc
+                status = getattr(exc, "status_code", None)
+                text = str(exc)
+                retryable = (
+                    status == 429
+                    or (status is not None and status >= 500)
+                    or "429" in text
+                    or "503" in text
+                    or "RESOURCE_EXHAUSTED" in text
+                    or "UNAVAILABLE" in text
+                    or "DEADLINE_EXCEEDED" in text
+                )
+                if retryable and attempt < max_attempts - 1:
+                    await asyncio.sleep(backoffs[attempt])
+                    continue
+                raise ProviderError(text, self.name, retryable=retryable, status_code=status) from exc
 
 
     async def generate_with_tools(self, request: LLMRequest, tools: list[ToolDefinition]) -> ToolModelResponse:

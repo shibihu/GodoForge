@@ -162,18 +162,30 @@ def run_repair(project_root: str | Path, settings: Settings, provider: str | Non
 
         if gemini_provider is not None and provider in {None, "gemini"}:
             files_before = _snapshot_project_files(project_root)
+            provider_failed = False
             try:
                 output = run_agent(project_root, prompt, gemini_provider, settings.max_tool_calls, runner=runner)
                 print(output)
             except ProviderError as exc:
-                print(f"\n⚠ Gemini API error: {exc.message}")
-                print("Retry attempts exhausted or provider failure occurred. Repair could not be completed.")
+                provider_failed = True
+                print(f"\n⚠ Gemini API error: {exc}")
+                print("Retry attempts exhausted or provider failure occurred.")
 
             files_after = _snapshot_project_files(project_root)
+            files_changed = files_before != files_after
 
-            if files_before != files_after:
+            if files_changed:
                 repairs_performed += 1
-            else:
+
+            if provider_failed:
+                if files_changed:
+                    print("\n[Notice] Files were modified, but AI provider encountered an error.")
+                    post_run = runner.run_project(project_root)
+                    if post_run.success:
+                        return f"✓ Godot verification passed\n✓ {repairs_performed} repair(s) performed\n✓ Project completed successfully"
+                    return f"⚠ AI provider failed and Godot verification still failed:\n{post_run.stderr or post_run.stdout}"
+                return f"⚠ Repair stopped due to Gemini API error: {last_errors}"
+            elif not files_changed:
                 print("\n[Notice] AI agent did not modify any project files on this attempt.")
         else:
             return f"Repair requires Gemini provider with function calling capability. Stderr: {run_res.stderr}"
