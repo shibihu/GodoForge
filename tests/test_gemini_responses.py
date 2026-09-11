@@ -220,6 +220,100 @@ async def test_thought_signature_survives_agent_loop_and_gemini_reconstruction()
     assert reconstructed[0]["thought_signature"] == b"sig-bytes"
 
 
+def _run_generate(response):
+    client = _Client(response)
+    provider = GeminiProvider("key", "gemini-test", client=client)
+    return provider.generate(LLMRequest([Message("user", "hi")]))
+
+
+@pytest.mark.asyncio
+async def test_generate_text_only_response_never_touches_response_text():
+    # _Response.text raises, so this passes only if parts are read explicitly.
+    response = _Response([_Candidate([_TextPart("hello "), _TextPart("world")])])
+    result = await _run_generate(response)
+    assert result.text == "hello world"
+    assert result.provider == "gemini"
+    assert result.model == "gemini-test"
+
+
+@pytest.mark.asyncio
+async def test_generate_empty_response_returns_empty_text():
+    assert (await _run_generate(_Response([]))).text == ""
+    assert (await _run_generate(_Response(None))).text == ""
+
+
+@pytest.mark.asyncio
+async def test_generate_malformed_response_is_tolerated():
+    class _Weird:
+        candidates = [object(), _Candidate([_TextPart("ok")])]
+        usage_metadata = None
+
+    assert (await _run_generate(_Weird())).text == "ok"
+
+    class _NoParts:
+        candidates = [object()]
+
+    assert (await _run_generate(_NoParts())).text == ""
+
+
+@pytest.mark.asyncio
+async def test_generate_function_call_part_does_not_access_response_text():
+    # generate() never exposes tools, but an unexpected function-call part must
+    # not trigger the response.text warning/error path.
+    response = _Response([_Candidate([_CallPart("read_file", {"path": "a.gd"})])])
+    assert (await _run_generate(response)).text == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+async def test_generate_transient_error_makes_one_request_and_is_retryable(status):
+    # generate() itself must not retry: the router falls through to the next
+    # provider. This guards against an excessive/double retry storm.
+    from rbxforge.core.llm.errors import ProviderError
+
+    client = _Client(_Response([_Candidate([_TextPart("ok")])]))
+
+    async def generate_content(**kwargs):
+        client.aio.models.calls.append(kwargs)
+        exc = Exception(f"{status} transient failure")
+        exc.status_code = status
+        raise exc
+
+    client.aio.models.generate_content = generate_content
+    provider = GeminiProvider("key", "gemini-test", client=client)
+
+    with pytest.raises(ProviderError) as exc_info:
+        await provider.generate(LLMRequest([Message("user", "hi")]))
+
+    assert len(client.aio.models.calls) == 1
+    assert exc_info.value.retryable is True
+    assert exc_info.value.status_code == status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 401, 403])
+async def test_generate_permanent_error_fails_fast(status):
+    from rbxforge.core.llm.errors import ProviderError
+
+    client = _Client(_Response([_Candidate([_TextPart("ok")])]))
+
+    async def generate_content(**kwargs):
+        client.aio.models.calls.append(kwargs)
+        exc = Exception(f"{status} permanent failure")
+        exc.status_code = status
+        raise exc
+
+    client.aio.models.generate_content = generate_content
+    provider = GeminiProvider("key", "gemini-test", client=client)
+
+    with pytest.raises(ProviderError) as exc_info:
+        await provider.generate(LLMRequest([Message("user", "hi")]))
+
+    assert len(client.aio.models.calls) == 1
+    assert exc_info.value.retryable is False
+    assert exc_info.value.status_code == status
+
+
 @pytest.mark.asyncio
 async def test_tool_declarations_are_sent_with_function_declarations():
     client = _Client(_Response([_Candidate([_TextPart("ok")])]))

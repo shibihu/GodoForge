@@ -45,6 +45,24 @@ def _is_transient_error(exc: BaseException) -> bool:
     return bool(_TRANSIENT_STATUS_PATTERN.search(text))
 
 
+def _extract_text(response) -> str:
+    """Join text from ``response.candidates[*].content.parts[*].text``.
+
+    ``response.text`` is intentionally avoided: the SDK raises a warning (and
+    newer versions an error) when the response contains non-text parts such as
+    function calls. Walking the parts explicitly keeps text-only responses
+    working while tolerating empty/partial/malformed responses.
+    """
+    text_parts: list[str] = []
+    for candidate in getattr(response, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            text = getattr(part, "text", None)
+            if isinstance(text, str) and text:
+                text_parts.append(text)
+    return "".join(text_parts)
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -73,7 +91,7 @@ class GeminiProvider:
             response = await models.generate_content(model=request.model or self.model, contents=contents, config=config)
             metadata = getattr(response, "usage_metadata", None)
             usage = Usage(getattr(metadata, "prompt_token_count", 0), getattr(metadata, "candidates_token_count", 0)) if metadata else None
-            return LLMResponse(response.text, self.name, request.model or self.model, usage)
+            return LLMResponse(_extract_text(response), self.name, request.model or self.model, usage)
         except Exception as exc:
             raise ProviderError(
                 str(exc), self.name, retryable=_is_transient_error(exc), status_code=_error_status_code(exc)
