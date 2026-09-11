@@ -148,9 +148,10 @@ def run_repair(project_root: str | Path, settings: Settings, provider: str | Non
             return f"✓ Godot verification passed (with warnings)\nStderr:\n{run_res.stderr}"
 
         current_errors_str = run_res.stderr or run_res.stdout
-        if current_errors_str == last_errors and attempt > 1:
+        current_error_sig = tuple((e.file, e.line, e.message) for e in run_res.errors) if run_res.errors else current_errors_str
+        if current_error_sig == last_errors and attempt > 1:
             return f"Repair stopped early: Error persisted unchanged after attempt {attempt - 1}.\nLast error:\n{current_errors_str}"
-        last_errors = current_errors_str
+        last_errors = current_error_sig
 
         print(f"Error detected during Godot execution:\n{current_errors_str}\n", flush=True)
 
