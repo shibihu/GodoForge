@@ -149,8 +149,9 @@ def run_repair(project_root: str | Path, settings: Settings, provider: str | Non
             return f"Repair stopped early: Error persisted unchanged after attempt {attempt - 1}.\nLast error:\n{current_errors_str}"
         last_errors = current_errors_str
 
-        print(f"\n[Repair Attempt {attempt}/{settings.max_repair_attempts}]")
-        print(f"Error detected during Godot execution:\n{current_errors_str}\n")
+        print(f"\n[Repair Attempt {attempt}/{settings.max_repair_attempts}]", flush=True)
+        print("Running Godot project check...", flush=True)
+        print(f"Error detected during Godot execution:\n{current_errors_str}\n", flush=True)
 
         prompt = (
             f"Godot execution failed on attempt {attempt}/{settings.max_repair_attempts}.\n"

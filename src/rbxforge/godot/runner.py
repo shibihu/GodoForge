@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -25,8 +26,6 @@ class GodotRunner:
         return output
 
     def _execute(self, root: Path, cmd: list[str]) -> GodotRunResult:
-        import selectors
-
         start_time = time.monotonic()
         try:
             process = subprocess.Popen(
@@ -39,84 +38,59 @@ class GodotRunner:
                 bufsize=1,
             )
 
-            stdout_chunks: list[str] = []
-            stderr_chunks: list[str] = []
-            has_fatal_startup_error = False
+            stdout_lines: list[str] = []
+            stderr_lines: list[str] = []
 
-            sel = selectors.DefaultSelector()
-            if process.stdout:
-                sel.register(process.stdout, selectors.EVENT_READ, data="stdout")
-            if process.stderr:
-                sel.register(process.stderr, selectors.EVENT_READ, data="stderr")
+            def read_stream(stream, chunks_list):
+                try:
+                    for line in iter(stream.readline, ""):
+                        chunks_list.append(line)
+                    stream.close()
+                except Exception:
+                    pass
+
+            t_stdout = threading.Thread(target=read_stream, args=(process.stdout, stdout_lines), daemon=True)
+            t_stderr = threading.Thread(target=read_stream, args=(process.stderr, stderr_lines), daemon=True)
+            t_stdout.start()
+            t_stderr.start()
 
             timed_out = False
+            has_fatal_startup_error = False
 
-            while sel.get_map():
+            while True:
                 elapsed = time.monotonic() - start_time
-                remaining = self.timeout - elapsed
-                if remaining <= 0:
+                if elapsed >= self.timeout:
                     timed_out = True
                     break
 
-                events = sel.select(timeout=min(0.2, remaining))
-                if not events:
-                    if process.poll() is not None:
-                        # Process finished, read remaining streams
-                        for key in list(sel.get_map().values()):
-                            line = key.fileobj.read()
-                            if line:
-                                if key.data == "stdout":
-                                    stdout_chunks.append(line)
-                                else:
-                                    stderr_chunks.append(line)
-                            sel.unregister(key.fileobj)
-                        break
-
-                for key, _ in events:
-                    line = key.fileobj.readline()
-                    if not line:
-                        sel.unregister(key.fileobj)
-                        continue
-                    if key.data == "stdout":
-                        stdout_chunks.append(line)
-                    else:
-                        stderr_chunks.append(line)
-
-                    # Check for fatal startup error
-                    current_stderr = "".join(stderr_chunks)
-                    current_stdout = "".join(stdout_chunks)
-                    parsed = GodotErrorParser.parse(current_stdout, current_stderr)
-                    if any(e.severity == "error" for e in parsed):
-                        has_fatal_startup_error = True
-
-                if has_fatal_startup_error:
-                    # Give Godot a short grace period (0.2s) to finish printing traceback details then kill
+                current_stdout = "".join(stdout_lines)
+                current_stderr = "".join(stderr_lines)
+                parsed = GodotErrorParser.parse(current_stdout, current_stderr)
+                if any(e.severity == "error" for e in parsed):
+                    has_fatal_startup_error = True
+                    # Short grace period to collect any remaining traceback text from stream threads
                     time.sleep(0.2)
-                    for key in list(sel.get_map().values()):
-                        try:
-                            rest = key.fileobj.read()
-                            if rest:
-                                if key.data == "stdout":
-                                    stdout_chunks.append(rest)
-                                else:
-                                    stderr_chunks.append(rest)
-                        except Exception:
-                            pass
-                        sel.unregister(key.fileobj)
-                    process.kill()
-                    process.wait()
                     break
 
-            if timed_out and process.poll() is None:
-                process.kill()
-                process.wait()
+                if process.poll() is not None:
+                    break
 
-            sel.close()
+                time.sleep(0.05)
+
+            if has_fatal_startup_error or timed_out:
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                except Exception:
+                    pass
+
+            t_stdout.join(timeout=1)
+            t_stderr.join(timeout=1)
 
             duration = time.monotonic() - start_time
-            raw_stdout = "".join(stdout_chunks)
-            raw_stderr = "".join(stderr_chunks)
-            if timed_out:
+            raw_stdout = "".join(stdout_lines)
+            raw_stderr = "".join(stderr_lines)
+            if timed_out and not has_fatal_startup_error:
                 raw_stderr += "\nError: Process timed out."
 
             stdout = self.truncate_output(raw_stdout)
@@ -125,15 +99,17 @@ class GodotRunner:
 
             parsed_errors = GodotErrorParser.parse(stdout, stderr)
             has_fatal_errors = any(e.severity == "error" for e in parsed_errors)
-            success = (exit_code == 0) and not has_fatal_errors and not timed_out
+            success = (exit_code == 0 or (has_fatal_startup_error and not exit_code)) and not has_fatal_errors and not (timed_out and not has_fatal_startup_error)
+            if has_fatal_startup_error:
+                success = False
 
             return GodotRunResult(
                 success=success,
-                exit_code=exit_code,
+                exit_code=exit_code if exit_code is not None else 1,
                 stdout=stdout,
                 stderr=stderr,
                 duration_seconds=round(duration, 3),
-                timed_out=timed_out,
+                timed_out=timed_out and not has_fatal_startup_error,
                 errors=parsed_errors,
             )
         except FileNotFoundError:
