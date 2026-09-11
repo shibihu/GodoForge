@@ -121,25 +121,15 @@ class GeminiProvider:
                 return [_clean_schema(item) for item in obj]
             return obj
 
-        try:
-            from google.genai import types
-            declarations = [
-                types.FunctionDeclaration(
-                    name=tool.name,
-                    description=tool.description,
-                    parameters=_clean_schema(tool.parameters),
-                )
-                for tool in tools
-            ]
-        except Exception:
-            declarations = [
-                {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": _clean_schema(tool.parameters),
-                }
-                for tool in tools
-            ]
+        from google.genai import types
+        declarations = [
+            types.FunctionDeclaration(
+                name=tool.name,
+                description=tool.description,
+                parameters=_clean_schema(tool.parameters),
+            )
+            for tool in tools
+        ]
         config = {
             "temperature": request.temperature,
             "tools": [{"function_declarations": declarations}],

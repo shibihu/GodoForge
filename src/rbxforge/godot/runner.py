@@ -10,6 +10,41 @@ from .errors import GodotErrorParser
 from .models import GodotRunResult
 
 
+class BoundedStreamBuffer:
+    """Thread-safe bounded output buffer that caps memory usage while reading streams."""
+
+    def __init__(self, max_bytes: int = 20000):
+        self.max_bytes = max_bytes
+        self._lock = threading.Lock()
+        self._bytes = bytearray()
+        self._total_read = 0
+
+    def append(self, text: str) -> None:
+        if not text:
+            return
+        data = text.encode("utf-8", errors="replace")
+        with self._lock:
+            self._total_read += len(data)
+            self._bytes.extend(data)
+            if len(self._bytes) > self.max_bytes * 2:
+                # Keep head and tail to fit max_bytes
+                half = self.max_bytes // 2
+                head = self._bytes[:half]
+                tail = self._bytes[-half:]
+                self._bytes = head + b"\n\n... [output truncated] ...\n\n" + tail
+
+    def get_value(self) -> str:
+        with self._lock:
+            raw = bytes(self._bytes)
+        output = raw.decode("utf-8", errors="replace")
+        if len(raw) > self.max_bytes:
+            half = self.max_bytes // 2
+            start_part = raw[:half].decode("utf-8", errors="ignore")
+            end_part = raw[-half:].decode("utf-8", errors="ignore")
+            return start_part + "\n\n... [output truncated] ...\n\n" + end_part
+        return output
+
+
 class GodotRunner:
     def __init__(self, godot_path: str = "godot", timeout: int = 30, max_output_bytes: int = 20000):
         self.godot_path = godot_path
@@ -38,19 +73,19 @@ class GodotRunner:
                 bufsize=1,
             )
 
-            stdout_lines: list[str] = []
-            stderr_lines: list[str] = []
+            stdout_buf = BoundedStreamBuffer(max_bytes=self.max_output_bytes)
+            stderr_buf = BoundedStreamBuffer(max_bytes=self.max_output_bytes)
 
-            def read_stream(stream, chunks_list):
+            def read_stream(stream, buffer):
                 try:
                     for line in iter(stream.readline, ""):
-                        chunks_list.append(line)
+                        buffer.append(line)
                     stream.close()
                 except Exception:
                     pass
 
-            t_stdout = threading.Thread(target=read_stream, args=(process.stdout, stdout_lines), daemon=True)
-            t_stderr = threading.Thread(target=read_stream, args=(process.stderr, stderr_lines), daemon=True)
+            t_stdout = threading.Thread(target=read_stream, args=(process.stdout, stdout_buf), daemon=True)
+            t_stderr = threading.Thread(target=read_stream, args=(process.stderr, stderr_buf), daemon=True)
             t_stdout.start()
             t_stderr.start()
 
@@ -63,12 +98,12 @@ class GodotRunner:
                     timed_out = True
                     break
 
-                current_stdout = "".join(stdout_lines)
-                current_stderr = "".join(stderr_lines)
+                current_stdout = stdout_buf.get_value()
+                current_stderr = stderr_buf.get_value()
                 parsed = GodotErrorParser.parse(current_stdout, current_stderr)
                 if any(e.severity == "error" for e in parsed):
                     has_fatal_startup_error = True
-                    # Short grace period to collect any remaining traceback text from stream threads
+                    # Grace period for stream threads to finish writing traceback details
                     time.sleep(0.2)
                     break
 
@@ -88,8 +123,8 @@ class GodotRunner:
             t_stderr.join(timeout=1)
 
             duration = time.monotonic() - start_time
-            raw_stdout = "".join(stdout_lines)
-            raw_stderr = "".join(stderr_lines)
+            raw_stdout = stdout_buf.get_value()
+            raw_stderr = stderr_buf.get_value()
             if timed_out and not has_fatal_startup_error:
                 raw_stderr += "\nError: Process timed out."
 
