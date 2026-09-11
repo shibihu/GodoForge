@@ -1,11 +1,48 @@
 import asyncio
 import base64
 import json
+import re
 
 from rbxforge.core.agent import ToolModelResponse
 from rbxforge.core.llm.errors import ProviderError
 from rbxforge.core.llm.models import LLMRequest, LLMResponse, Usage
 from rbxforge.core.tools import ToolCall, ToolDefinition
+
+
+# Transient failures that are safe to retry. Anything else (400/401/403, ...)
+# must fail fast without additional requests.
+_TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_TRANSIENT_KEYWORDS = ("RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE_EXCEEDED")
+_TRANSIENT_STATUS_PATTERN = re.compile(r"\b(?:429|500|502|503|504)\b")
+
+
+def _error_status_code(exc: BaseException) -> int | None:
+    """Best-effort extraction of an HTTP status from a provider exception.
+
+    ``google-genai`` exposes ``code`` as an int on ``APIError`` while other
+    wrappers use ``status_code``; both are inspected so transient failures are
+    recognised even though the raw text differs between SDK versions.
+    """
+    for attribute in ("status_code", "code"):
+        value = getattr(exc, attribute, None)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    """Return True only for failures that are safe to retry (429/5xx + gRPC)."""
+    status = _error_status_code(exc)
+    if status is not None:
+        return status in _TRANSIENT_STATUS_CODES
+    text = str(exc)
+    if any(keyword in text.upper() for keyword in _TRANSIENT_KEYWORDS):
+        return True
+    return bool(_TRANSIENT_STATUS_PATTERN.search(text))
 
 
 class GeminiProvider:
@@ -38,10 +75,9 @@ class GeminiProvider:
             usage = Usage(getattr(metadata, "prompt_token_count", 0), getattr(metadata, "candidates_token_count", 0)) if metadata else None
             return LLMResponse(response.text, self.name, request.model or self.model, usage)
         except Exception as exc:
-            status = getattr(exc, "status_code", None)
-            text = str(exc)
-            retryable = status == 429 or status is not None and status >= 500 or "429" in text or "RESOURCE_EXHAUSTED" in text
-            raise ProviderError(text, self.name, retryable=retryable, status_code=status) from exc
+            raise ProviderError(
+                str(exc), self.name, retryable=_is_transient_error(exc), status_code=_error_status_code(exc)
+            ) from exc
 
 
     async def generate_with_tools(self, request: LLMRequest, tools: list[ToolDefinition]) -> ToolModelResponse:
@@ -139,7 +175,6 @@ class GeminiProvider:
             config["max_output_tokens"] = request.max_tokens
         max_attempts = 3
         backoffs = [2, 4, 8]
-        last_exception = None
 
         for attempt in range(max_attempts):
             try:
@@ -174,22 +209,13 @@ class GeminiProvider:
                 response_text = "".join(text_parts) if text_parts else ""
                 return ToolModelResponse(text=response_text, tool_calls=calls)
             except Exception as exc:
-                last_exception = exc
-                status = getattr(exc, "status_code", None)
-                text = str(exc)
-                retryable = (
-                    status == 429
-                    or (status is not None and status >= 500)
-                    or "429" in text
-                    or "503" in text
-                    or "RESOURCE_EXHAUSTED" in text
-                    or "UNAVAILABLE" in text
-                    or "DEADLINE_EXCEEDED" in text
-                )
+                retryable = _is_transient_error(exc)
                 if retryable and attempt < max_attempts - 1:
                     await asyncio.sleep(backoffs[attempt])
                     continue
-                raise ProviderError(text, self.name, retryable=retryable, status_code=status) from exc
+                raise ProviderError(
+                    str(exc), self.name, retryable=retryable, status_code=_error_status_code(exc)
+                ) from exc
 
     async def health(self) -> bool:
         return bool(self.api_key or self.client)

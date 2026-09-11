@@ -124,13 +124,42 @@ def _format_run_result(result, mode_label: str) -> str:
     return "\n".join(lines)
 
 
+def _error_signature(result) -> tuple:
+    """Structured identity for a Godot run, used to detect unchanged errors.
+
+    Comparing parsed ``file``/``line``/``message`` values keeps detection stable
+    even when surrounding stdout/stderr formatting changes between runs.
+    """
+    fatal_errors = [e for e in result.errors if e.severity == "error"]
+    if fatal_errors:
+        return tuple(
+            sorted(
+                ((e.file or "").strip(), e.line or 0, (e.message or "").strip())
+                for e in fatal_errors
+            )
+        )
+    text = (result.stderr or result.stdout or "").strip()
+    return (text,) if text else ()
+
+
+def _provider_failure_report(provider_error: str, result) -> str:
+    details = (result.stderr or result.stdout or "").strip() or "Godot verification did not pass."
+    return (
+        "✗ Repair could not be completed: the AI provider failed.\n"
+        f"Provider error: {provider_error}\n"
+        "Godot verification after the failure did not pass:\n"
+        f"{details}"
+    )
+
+
 def run_repair(project_root: str | Path, settings: Settings, provider: str | None = None) -> str:
     providers = build_providers(settings)
     gemini_provider = providers.get("gemini")
     runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout, max_output_bytes=settings.godot_max_output_bytes)
 
-    last_errors = None
-    repairs_performed = 0
+    last_signature = None
+    provider_error: str | None = None
+    file_modifications = 0
 
     for attempt in range(1, settings.max_repair_attempts + 1):
         print(f"\n[Repair Attempt {attempt}/{settings.max_repair_attempts}]", flush=True)
@@ -138,19 +167,28 @@ def run_repair(project_root: str | Path, settings: Settings, provider: str | Non
 
         run_res = runner.run_project(project_root)
         if run_res.success:
-            if repairs_performed > 0:
-                return f"✓ Godot verification passed\n✓ {repairs_performed} repair(s) performed\n✓ Project completed successfully"
-            else:
-                return "✓ Godot verification passed. No repairs needed."
+            if file_modifications > 0:
+                return (
+                    "✓ Godot verification passed\n"
+                    f"✓ {file_modifications} repair(s) performed and verified by Godot\n"
+                    "✓ Project completed successfully"
+                )
+            return "✓ Godot verification passed. No repairs needed."
 
         fatal_errors = [e for e in run_res.errors if e.severity == "error"]
         if not fatal_errors and run_res.errors:
             return f"✓ Godot verification passed (with warnings)\nStderr:\n{run_res.stderr}"
 
         current_errors_str = run_res.stderr or run_res.stdout
-        if current_errors_str == last_errors and attempt > 1:
-            return f"Repair stopped early: Error persisted unchanged after attempt {attempt - 1}.\nLast error:\n{current_errors_str}"
-        last_errors = current_errors_str
+        signature = _error_signature(run_res)
+        if signature and signature == last_signature and attempt > 1:
+            if provider_error is not None:
+                return _provider_failure_report(provider_error, run_res)
+            return (
+                f"Repair stopped early: Godot error persisted unchanged after attempt {attempt - 1}.\n"
+                f"Last error:\n{current_errors_str}"
+            )
+        last_signature = signature
 
         print(f"Error detected during Godot execution:\n{current_errors_str}\n", flush=True)
 
@@ -166,24 +204,34 @@ def run_repair(project_root: str | Path, settings: Settings, provider: str | Non
                 output = run_agent(project_root, prompt, gemini_provider, settings.max_tool_calls, runner=runner)
                 print(output)
             except ProviderError as exc:
-                print(f"\n⚠ Gemini API error: {exc.message}")
-                print("Retry attempts exhausted or provider failure occurred. Repair could not be completed.")
+                status = f" ({exc.status_code})" if exc.status_code else ""
+                provider_error = f"{exc.provider} API error{status}: {exc.message}"
+                print(f"\n⚠ AI provider failure: {provider_error}")
+                print("Godot verification has not established success for this attempt.")
 
             files_after = _snapshot_project_files(project_root)
-
             if files_before != files_after:
-                repairs_performed += 1
+                file_modifications += 1
+                print("\n[Notice] AI agent modified project files on this attempt.")
             else:
                 print("\n[Notice] AI agent did not modify any project files on this attempt.")
         else:
             return f"Repair requires Gemini provider with function calling capability. Stderr: {run_res.stderr}"
 
-    # Final check after max attempts
+    # Final check after max attempts: a repair only counts when Godot verifies it.
     final_run = runner.run_project(project_root)
     if final_run.success:
-        return f"✓ Godot verification passed\n✓ {repairs_performed} repair(s) performed\n✓ Project completed successfully"
-
-    return f"Repair limit reached ({settings.max_repair_attempts} attempts). The project still has errors:\n{final_run.stderr or final_run.stdout}"
+        return (
+            "✓ Godot verification passed\n"
+            f"✓ {file_modifications} repair(s) performed and verified by Godot\n"
+            "✓ Project completed successfully"
+        )
+    if provider_error is not None:
+        return _provider_failure_report(provider_error, final_run)
+    return (
+        f"Repair limit reached ({settings.max_repair_attempts} attempts). "
+        f"The project still has errors:\n{final_run.stderr or final_run.stdout}"
+    )
 
 
 def run(project_root: str | Path, prompt: str, complexity: str, provider: str | None, router: LLMRouter | None = None) -> str:
