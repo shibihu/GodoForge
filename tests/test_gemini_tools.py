@@ -7,10 +7,20 @@ from rbxforge.core.tools import ToolCall, ToolDefinition
 from rbxforge.providers.gemini.provider import GeminiProvider
 
 
+class FakePartText:
+    text = "done"
+    function_call = None
+
+class FakeContentText:
+    parts = [FakePartText()]
+
+class FakeCandidateText:
+    content = FakeContentText()
+
 class FakeResponse:
     text = "done"
     usage_metadata = None
-    candidates = []
+    candidates = [FakeCandidateText()]
 
 
 class FakeModels:
