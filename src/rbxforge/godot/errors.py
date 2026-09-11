@@ -10,15 +10,15 @@ class GodotErrorParser:
     )
 
     _ERROR_TYPE_PATTERNS = [
-        ("parser_error", re.compile(r"parser\s+error|parse\s+error", re.IGNORECASE)),
+        ("parser_error", re.compile(r"parser\s+error|parse\s+error|undeclared\s+identifier|syntax\s+error", re.IGNORECASE)),
         ("script_error", re.compile(r"script\s+error", re.IGNORECASE)),
         ("null_instance", re.compile(r"null\s+instance|invalid\s+get\s+index|invalid\s+set\s+index|cannot\s+call\s+method|on\s+a\s+null\s+instance", re.IGNORECASE)),
-        ("invalid_call", re.compile(r"invalid\s+call|invalid\s+type|invalid\s+argument", re.IGNORECASE)),
+        ("invalid_call", re.compile(r"invalid\s+call|invalid\s+type|invalid\s+argument|invalid\s+operand", re.IGNORECASE)),
         ("node_not_found", re.compile(r"node\s+not\s+found|node\s+path", re.IGNORECASE)),
         ("missing_resource", re.compile(r"failed\s+to\s+load|cannot\s+open\s+file|resource\s+not\s+found", re.IGNORECASE)),
     ]
 
-    _ERROR_HEADERS = (
+    _EXPLICIT_ERROR_HEADERS = (
         "ERROR:",
         "SCRIPT ERROR:",
         "Parser Error:",
@@ -30,6 +30,8 @@ class GodotErrorParser:
         "Node not found:",
         "Failed to load script:",
         "Condition",
+        "Identifier ",
+        "not declared in the current scope",
     )
 
     @classmethod
@@ -48,8 +50,13 @@ class GodotErrorParser:
             if not line_str:
                 continue
 
-            is_warning = "warning" in line_str.lower()
-            is_error = any(hdr.lower() in line_str.lower() for hdr in cls._ERROR_HEADERS) or ("error" in line_str.lower() and not is_warning)
+            is_warning = line_str.lower().startswith("warning:") or "warning:" in line_str.lower()
+
+            # Require explicit header match or known error type pattern
+            has_error_header = any(hdr.lower() in line_str.lower() for hdr in cls._EXPLICIT_ERROR_HEADERS)
+            has_error_pattern = any(pat.search(line_str) for _, pat in cls._ERROR_TYPE_PATTERNS)
+
+            is_error = (has_error_header or has_error_pattern) and not is_warning
 
             if not is_error and not is_warning:
                 continue

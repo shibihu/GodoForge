@@ -49,7 +49,9 @@ async def test_gemini_provider_can_receive_tool_declarations():
 
     assert result.text == "done"
     config = client.aio.models.calls[0]["config"]
-    assert config["tools"][0]["function_declarations"][0]["name"] == "read_file"
+    decl = config["tools"][0]["function_declarations"][0]
+    name = getattr(decl, "name", None) or decl["name"]
+    assert name == "read_file"
 
 
 class FakeFunctionCall:
