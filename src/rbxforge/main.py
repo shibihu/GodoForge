@@ -133,6 +133,9 @@ def run_repair(project_root: str | Path, settings: Settings, provider: str | Non
     repairs_performed = 0
 
     for attempt in range(1, settings.max_repair_attempts + 1):
+        print(f"\n[Repair Attempt {attempt}/{settings.max_repair_attempts}]", flush=True)
+        print("Running Godot project check...", flush=True)
+
         run_res = runner.run_project(project_root)
         if run_res.success:
             if repairs_performed > 0:
@@ -149,8 +152,6 @@ def run_repair(project_root: str | Path, settings: Settings, provider: str | Non
             return f"Repair stopped early: Error persisted unchanged after attempt {attempt - 1}.\nLast error:\n{current_errors_str}"
         last_errors = current_errors_str
 
-        print(f"\n[Repair Attempt {attempt}/{settings.max_repair_attempts}]", flush=True)
-        print("Running Godot project check...", flush=True)
         print(f"Error detected during Godot execution:\n{current_errors_str}\n", flush=True)
 
         prompt = (
