@@ -164,13 +164,8 @@ def _provider_failure_report(provider_error: str, result) -> str:
 
 def run_repair(project_root: str | Path, settings: Settings, provider: str | None = None, model: str | None = None) -> str:
     providers = build_providers(settings)
-    if provider and provider in providers:
-        provider_target = providers[provider]
-        if model:
-            provider_target = lambda req, tools: providers[provider].generate_with_tools(req, tools, model=model)
-    else:
-        hub = ProviderHub(providers, settings)
-        provider_target = lambda req, tools: hub.generate_with_tools(req, tools, provider=provider, model=model)
+    hub = ProviderHub(providers, settings)
+    provider_target = lambda req, tools: hub.generate_with_tools(req, tools, provider=provider, model=model)
 
     runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout, max_output_bytes=settings.godot_max_output_bytes)
 
@@ -268,8 +263,8 @@ def run(
 
     hub = ProviderHub(providers, settings)
 
-    # Try tool agent first if provider supports tools or in auto/gemini mode
-    if provider in {None, "auto", "gemini", "groq", "openrouter"}:
+    # Try tool agent first if provider supports tools or in auto/gemini/ollama mode
+    if provider in {None, "auto", "gemini", "groq", "openrouter", "ollama"}:
         try:
             tool_target = lambda req, tools: hub.generate_with_tools(req, tools, provider=provider, model=model)
             return run_agent(project_root, prompt, tool_target, settings.max_tool_calls)

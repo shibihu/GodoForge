@@ -103,3 +103,23 @@ async def test_provider_hub_select_best_model_and_auto_generate():
 
     assert res.text == "hello from gemini"
     assert res.provider == "gemini"
+
+
+@pytest.mark.asyncio
+async def test_provider_hub_uses_ollama_for_tool_calling():
+    settings = Settings(allow_paid_models=False)
+
+    p_ollama = AsyncMock()
+    p_ollama.name = "ollama"
+    p_ollama.health.return_value = True
+    p_ollama.list_models.return_value = [
+        ModelInfo("qwen3:4b", "ollama", CostCategory.FREE, True, 80.0)
+    ]
+    from rbxforge.core.agent import ToolModelResponse
+    p_ollama.generate_with_tools.return_value = ToolModelResponse(text="tool result from ollama")
+
+    hub = ProviderHub({"ollama": p_ollama}, settings)
+    res = await hub.generate_with_tools(LLMRequest([Message("user", "hi")]), [], provider="ollama")
+
+    assert res.text == "tool result from ollama"
+    assert p_ollama.generate_with_tools.called
