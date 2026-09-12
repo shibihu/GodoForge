@@ -13,6 +13,7 @@ from .core.router import LLMRouter
 from .godot.analyzer import GodotProjectAnalyzer
 from .godot.files import GodotFileService
 from .godot.runner import GodotRunner
+from .providers.hub import ProviderHub
 from .providers.registry import build_providers
 
 
@@ -52,14 +53,23 @@ def confirm_tool_action(operation: str, path: str, details: str) -> bool:
     return answer in {"y", "yes"}
 
 
-def run_agent(project_root: str | Path, prompt: str, gemini_provider, max_tool_calls: int = 12, runner: GodotRunner | None = None) -> str:
+def run_agent(
+    project_root: str | Path,
+    prompt: str,
+    gemini_provider,
+    max_tool_calls: int = 12,
+    runner: GodotRunner | None = None,
+) -> str:
     request = build_request(project_root, prompt)
     service = GodotFileService(project_root)
     executor = GodotToolExecutor(service, confirm_tool_action, runner=runner)
-    agent = ToolAgent(
-        lambda req, tools: gemini_provider.generate_with_tools(req, tools),
-        max_tool_calls=max_tool_calls,
-    )
+
+    if hasattr(gemini_provider, "generate_with_tools"):
+        model_call = lambda req, tools: gemini_provider.generate_with_tools(req, tools)
+    else:
+        model_call = gemini_provider
+
+    agent = ToolAgent(model_call, max_tool_calls=max_tool_calls)
     response = asyncio.run(agent.run(request, executor))
     return response.text
 
@@ -152,9 +162,16 @@ def _provider_failure_report(provider_error: str, result) -> str:
     )
 
 
-def run_repair(project_root: str | Path, settings: Settings, provider: str | None = None) -> str:
+def run_repair(project_root: str | Path, settings: Settings, provider: str | None = None, model: str | None = None) -> str:
     providers = build_providers(settings)
-    gemini_provider = providers.get("gemini")
+    if provider and provider in providers:
+        provider_target = providers[provider]
+        if model:
+            provider_target = lambda req, tools: providers[provider].generate_with_tools(req, tools, model=model)
+    else:
+        hub = ProviderHub(providers, settings)
+        provider_target = lambda req, tools: hub.generate_with_tools(req, tools, provider=provider, model=model)
+
     runner = GodotRunner(godot_path=settings.godot_path, timeout=settings.godot_timeout, max_output_bytes=settings.godot_max_output_bytes)
 
     last_signature = None
@@ -198,25 +215,24 @@ def run_repair(project_root: str | Path, settings: Settings, provider: str | Non
             "Please analyze the runtime error, inspect project files, and fix the issue."
         )
 
-        if gemini_provider is not None and provider in {None, "gemini"}:
-            files_before = _snapshot_project_files(project_root)
-            try:
-                output = run_agent(project_root, prompt, gemini_provider, settings.max_tool_calls, runner=runner)
-                print(output)
-            except ProviderError as exc:
-                status = f" ({exc.status_code})" if exc.status_code else ""
-                provider_error = f"{exc.provider} API error{status}: {exc.message}"
-                print(f"\n⚠ AI provider failure: {provider_error}")
-                print("Godot verification has not established success for this attempt.")
-
-            files_after = _snapshot_project_files(project_root)
-            if files_before != files_after:
-                file_modifications += 1
-                print("\n[Notice] AI agent modified project files on this attempt.")
-            else:
-                print("\n[Notice] AI agent did not modify any project files on this attempt.")
-        else:
+        files_before = _snapshot_project_files(project_root)
+        try:
+            output = run_agent(project_root, prompt, provider_target, settings.max_tool_calls, runner=runner)
+            print(output)
+        except ProviderError as exc:
+            status = f" ({exc.status_code})" if exc.status_code else ""
+            provider_error = f"{exc.provider} API error{status}: {exc.message}"
+            print(f"\n⚠ AI provider failure: {provider_error}")
+            print("Godot verification has not established success for this attempt.")
+        except Exception as exc:
             return f"Repair requires Gemini provider with function calling capability. Stderr: {run_res.stderr}"
+
+        files_after = _snapshot_project_files(project_root)
+        if files_before != files_after:
+            file_modifications += 1
+            print("\n[Notice] AI agent modified project files on this attempt.")
+        else:
+            print("\n[Notice] AI agent did not modify any project files on this attempt.")
 
     # Final check after max attempts: a repair only counts when Godot verifies it.
     final_run = runner.run_project(project_root)
@@ -234,18 +250,51 @@ def run_repair(project_root: str | Path, settings: Settings, provider: str | Non
     )
 
 
-def run(project_root: str | Path, prompt: str, complexity: str, provider: str | None, router: LLMRouter | None = None) -> str:
+def run(
+    project_root: str | Path,
+    prompt: str,
+    complexity: str,
+    provider: str | None,
+    router: LLMRouter | None = None,
+    model: str | None = None,
+) -> str:
     settings = Settings.from_env()
     providers = build_providers(settings)
-    if router is None and provider in {None, "gemini"} and "gemini" in providers:
-        return run_agent(project_root, prompt, providers["gemini"], settings.max_tool_calls)
-    active_router = router or LLMRouter(providers)
+
+    if router is not None:
+        request = build_request(project_root, prompt)
+        response = asyncio.run(router.generate(request, TaskComplexity(complexity), provider=provider))
+        return response.text
+
+    hub = ProviderHub(providers, settings)
+
+    # Try tool agent first if provider supports tools or in auto/gemini mode
+    if provider in {None, "auto", "gemini", "groq", "openrouter"}:
+        try:
+            tool_target = lambda req, tools: hub.generate_with_tools(req, tools, provider=provider, model=model)
+            return run_agent(project_root, prompt, tool_target, settings.max_tool_calls)
+        except Exception:
+            pass
+
     request = build_request(project_root, prompt)
-    response = asyncio.run(active_router.generate(request, TaskComplexity(complexity), provider=provider))
+    response = asyncio.run(hub.generate(request, TaskComplexity(complexity), provider=provider, model=model))
     return response.text
 
 
-def run_interactive(project_root: str | Path, complexity: str, provider: str | None) -> None:
+def run_models_cmd(settings: Settings) -> str:
+    providers = build_providers(settings)
+    hub = ProviderHub(providers, settings)
+    models = asyncio.run(hub.list_models())
+    if not models:
+        return "No models discovered. Please check your provider configuration/API keys."
+    lines = ["Discovered Models:"]
+    for m in models:
+        tools_str = "✓ tools" if m.supports_tools else "no tools"
+        lines.append(f" - [{m.provider}] {m.name} ({m.cost.value}, {tools_str})")
+    return "\n".join(lines)
+
+
+def run_interactive(project_root: str | Path, complexity: str, provider: str | None, model: str | None = None) -> None:
     print("RBXForge")
     print(f"Godot project: {Path(project_root).resolve()}")
     print("Type 'exit' or 'quit' to leave interactive mode.")
@@ -261,7 +310,10 @@ def run_interactive(project_root: str | Path, complexity: str, provider: str | N
         if prompt.lower() in {"exit", "quit"}:
             return
         try:
-            print(run(project_root, prompt, complexity, provider))
+            if model is not None:
+                print(run(project_root, prompt, complexity, provider, model=model))
+            else:
+                print(run(project_root, prompt, complexity, provider))
         except (ValueError, ProviderError) as exc:
             print(f"error: {exc}")
 
@@ -271,7 +323,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("prompt", nargs="?", default=None, help="Question or task for the AI. Omit to start interactive mode.")
     parser.add_argument("--project", default=None, help="Path to a Godot project containing project.godot (defaults to the nearest one found from the current directory)")
     parser.add_argument("--complexity", choices=[item.value for item in TaskComplexity], default=None)
-    parser.add_argument("--provider", choices=["ollama", "gemini"], default=None)
+    parser.add_argument("--provider", choices=["auto", "ollama", "gemini", "groq", "openrouter"], default=None)
+    parser.add_argument("--model", default=None, help="Specific LLM model to use")
+    parser.add_argument("--models", action="store_true", help="List available models across all configured providers")
     parser.add_argument("--check", action="store_true", help="Validate/load Godot project in headless mode without executing main scene")
     parser.add_argument("--run", action="store_true", help="Run Godot project main scene in headless mode and capture execution errors")
     parser.add_argument("--repair", action="store_true", help="Run AI-assisted Godot verification and repair loop")
@@ -300,6 +354,10 @@ def main() -> None:
     complexity = args.complexity or settings.default_complexity.value
     project_root = resolve_project_root(parser, args.project)
 
+    if args.models:
+        print(run_models_cmd(settings))
+        return
+
     if args.check:
         print(run_check(project_root, settings))
         return
@@ -309,14 +367,20 @@ def main() -> None:
         return
 
     if args.repair:
-        print(run_repair(project_root, settings, args.provider))
+        if args.model is not None:
+            print(run_repair(project_root, settings, args.provider, model=args.model))
+        else:
+            print(run_repair(project_root, settings, args.provider))
         return
 
     if args.prompt is None:
-        run_interactive(project_root, complexity, args.provider)
+        run_interactive(project_root, complexity, args.provider, args.model)
         return
     try:
-        print(run(project_root, args.prompt, complexity, args.provider))
+        if args.model is not None:
+            print(run(project_root, args.prompt, complexity, args.provider, model=args.model))
+        else:
+            print(run(project_root, args.prompt, complexity, args.provider))
     except ValueError as exc:
         parser.error(str(exc))
 

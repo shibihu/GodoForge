@@ -1,6 +1,6 @@
-from typing import Protocol
+from typing import Protocol, Any
 
-from .models import LLMRequest, LLMResponse
+from .models import LLMRequest, LLMResponse, ModelInfo
 
 
 class LLMProvider(Protocol):
@@ -8,3 +8,4 @@ class LLMProvider(Protocol):
 
     async def generate(self, request: LLMRequest) -> LLMResponse: ...
     async def health(self) -> bool: ...
+    async def list_models(self) -> list[ModelInfo]: ...

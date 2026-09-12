@@ -12,6 +12,11 @@ class Settings:
     ollama_model: str = "qwen3:4b"
     gemini_api_key: str = ""
     gemini_model: str = ""
+    groq_api_key: str = ""
+    groq_model: str = ""
+    openrouter_api_key: str = ""
+    openrouter_model: str = ""
+    allow_paid_models: bool = False
     default_complexity: TaskComplexity = TaskComplexity.MODERATE
     max_tool_calls: int = 12
     godot_path: str = "godot"
@@ -48,11 +53,18 @@ class Settings:
         except ValueError as exc:
             raise ValueError(f"Invalid GODOFORGE_MAX_REPAIR_ATTEMPTS: {exc}") from exc
 
+        allow_paid = os.getenv("RBXFORGE_ALLOW_PAID_MODELS", "false").lower() in {"true", "1", "yes"}
+
         return cls(
             ollama_base_url=os.getenv("RBXFORGE_OLLAMA_BASE_URL", cls.ollama_base_url),
             ollama_model=os.getenv("RBXFORGE_OLLAMA_MODEL", cls.ollama_model),
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
             gemini_model=os.getenv("GEMINI_MODEL", ""),
+            groq_api_key=os.getenv("GROQ_API_KEY", ""),
+            groq_model=os.getenv("GROQ_MODEL", ""),
+            openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
+            openrouter_model=os.getenv("OPENROUTER_MODEL", ""),
+            allow_paid_models=allow_paid,
             default_complexity=TaskComplexity(os.getenv("RBXFORGE_DEFAULT_COMPLEXITY", cls.default_complexity.value)),
             max_tool_calls=max_tool_calls,
             godot_path=os.getenv("GODOFORGE_GODOT_PATH", cls.godot_path),

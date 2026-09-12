@@ -35,6 +35,30 @@ Gemini + Godot tools
                          project files
 ```
 
+## Phase 2.5: Provider Hub & Dynamic LLM Management
+
+Phase 2.5 introduces the Provider Hub to manage multiple LLM backends cleanly with dynamic model discovery, capability detection, cost classification, model ranking, automatic selection, and safe fallback.
+
+### Phase 2.5 Features
+- **Supported Providers**: Ollama, Gemini, Groq, and OpenRouter.
+- **Dynamic Model Discovery**: Discover available models dynamically across configured providers via `rbxforge --models`.
+- **Capability Detection**: Automatically identify models that support native function/tool calling.
+- **Cost Classification**: Classify discovered models as `free`, `paid`, or `unknown`. Paid models are excluded by default unless explicitly allowed.
+- **Automatic Provider Selection**: `--provider auto` dynamically evaluates model capability, ranking, cost, and provider health to select the best model.
+- **Safe Fallback**: Automatic fallback to alternative available providers if the active provider encounters transient failures or errors.
+
+### Phase 2.5 Configuration Environment Variables
+- `RBXFORGE_ALLOW_PAID_MODELS` (default: `false`): Set to `true` to allow usage/selection of paid models on OpenRouter or other paid endpoints.
+- `GROQ_API_KEY`: API key for Groq LLM provider.
+- `GROQ_MODEL`: Default model for Groq.
+- `OPENROUTER_API_KEY`: API key for OpenRouter LLM provider.
+- `OPENROUTER_MODEL`: Default model for OpenRouter.
+
+### CLI Options
+- `--provider {auto,ollama,gemini,groq,openrouter}`: Select AI provider or auto mode.
+- `--model <name>`: Request a specific model name across providers.
+- `--models`: Discover and list available models with capabilities and cost classification, then exit.
+
 ## Phase 2: Godot Runtime Verification + AI Debugging & Repair Loop
 
 Phase 2 adds headless Godot runtime verification and an AI-assisted repair loop.

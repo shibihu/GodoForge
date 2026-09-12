@@ -1,7 +1,7 @@
 import httpx
 
 from rbxforge.core.llm.errors import ProviderError
-from rbxforge.core.llm.models import LLMRequest, LLMResponse, Usage
+from rbxforge.core.llm.models import CostCategory, LLMRequest, LLMResponse, ModelInfo, Usage
 
 
 class OllamaProvider:
@@ -35,6 +35,33 @@ class OllamaProvider:
             )
         except httpx.HTTPError as exc:
             raise ProviderError(str(exc), self.name, retryable=True) from exc
+        finally:
+            if self.client is None:
+                await client.aclose()
+
+    async def list_models(self) -> list[ModelInfo]:
+        client = self.client or httpx.AsyncClient(timeout=10)
+        try:
+            response = await client.get(f"{self.base_url}/api/tags")
+            if not response.is_success:
+                return []
+            data = response.json()
+            models = []
+            for item in data.get("models", []):
+                name = item.get("name", "")
+                if name:
+                    models.append(
+                        ModelInfo(
+                            name=name,
+                            provider=self.name,
+                            cost=CostCategory.FREE,
+                            supports_tools=False,
+                            score=60.0,
+                        )
+                    )
+            return models
+        except httpx.HTTPError:
+            return []
         finally:
             if self.client is None:
                 await client.aclose()
