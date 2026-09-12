@@ -23,6 +23,8 @@ class Settings:
     godot_timeout: int = 30
     max_repair_attempts: int = 3
     godot_max_output_bytes: int = 20000
+    llm_timeout: float = 60.0
+    llm_connect_timeout: float = 10.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -55,6 +57,20 @@ class Settings:
 
         allow_paid = os.getenv("RBXFORGE_ALLOW_PAID_MODELS", "false").lower() in {"true", "1", "yes"}
 
+        try:
+            llm_timeout = float(os.getenv("RBXFORGE_LLM_TIMEOUT", str(cls.llm_timeout)))
+            if llm_timeout <= 0:
+                raise ValueError("llm_timeout must be positive")
+        except ValueError as exc:
+            raise ValueError(f"Invalid RBXFORGE_LLM_TIMEOUT: {exc}") from exc
+
+        try:
+            llm_connect_timeout = float(os.getenv("RBXFORGE_LLM_CONNECT_TIMEOUT", str(cls.llm_connect_timeout)))
+            if llm_connect_timeout <= 0:
+                raise ValueError("llm_connect_timeout must be positive")
+        except ValueError as exc:
+            raise ValueError(f"Invalid RBXFORGE_LLM_CONNECT_TIMEOUT: {exc}") from exc
+
         return cls(
             ollama_base_url=os.getenv("RBXFORGE_OLLAMA_BASE_URL", cls.ollama_base_url),
             ollama_model=os.getenv("RBXFORGE_OLLAMA_MODEL", cls.ollama_model),
@@ -71,4 +87,6 @@ class Settings:
             godot_timeout=godot_timeout,
             max_repair_attempts=max_repair_attempts,
             godot_max_output_bytes=godot_max_output_bytes,
+            llm_timeout=llm_timeout,
+            llm_connect_timeout=llm_connect_timeout,
         )

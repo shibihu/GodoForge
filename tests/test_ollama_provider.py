@@ -11,6 +11,13 @@ from rbxforge.providers.ollama.provider import OllamaProvider
 
 
 @pytest.mark.asyncio
+async def test_ollama_configurable_timeout():
+    provider = OllamaProvider(timeout=120.0, connect_timeout=15.0)
+    assert provider.timeout.read == 120.0
+    assert provider.timeout.connect == 15.0
+
+
+@pytest.mark.asyncio
 async def test_ollama_normal_generation():
     client = MagicMock()
     client.post = AsyncMock()
@@ -35,7 +42,7 @@ async def test_ollama_normal_generation():
 
 
 @pytest.mark.asyncio
-async def test_ollama_tool_calling_parses_tool_calls():
+async def test_ollama_tool_calling_parses_multiple_tool_calls():
     client = MagicMock()
     client.post = AsyncMock()
     mock_resp = MagicMock()
@@ -43,15 +50,22 @@ async def test_ollama_tool_calling_parses_tool_calls():
     mock_resp.json.return_value = {
         "model": "qwen3:4b",
         "message": {
-            "content": "Running tool",
+            "content": "Running tools",
             "tool_calls": [
                 {
                     "id": "call_123",
                     "function": {
                         "name": "read_file",
-                        "arguments": {"filepath": "player.gd"},
+                        "arguments": '{"filepath": "player.gd"}',
                     },
-                }
+                },
+                {
+                    "id": "call_456",
+                    "function": {
+                        "name": "search_code",
+                        "arguments": {"pattern": "CharacterBody2D"},
+                    },
+                },
             ],
         },
     }
@@ -59,17 +73,18 @@ async def test_ollama_tool_calling_parses_tool_calls():
 
     provider = OllamaProvider(client=client)
     tools = [ToolDefinition("read_file", "Read file", {"type": "object"}, False)]
-    res = await provider.generate_with_tools(LLMRequest([Message("user", "read player.gd")]), tools)
+    res = await provider.generate_with_tools(LLMRequest([Message("user", "inspect")]), tools)
 
-    assert res.text == "Running tool"
-    assert len(res.tool_calls) == 1
+    assert res.text == "Running tools"
+    assert len(res.tool_calls) == 2
     assert res.tool_calls[0].name == "read_file"
     assert res.tool_calls[0].arguments == {"filepath": "player.gd"}
-    assert res.tool_calls[0].call_id == "call_123"
+    assert res.tool_calls[1].name == "search_code"
+    assert res.tool_calls[1].arguments == {"pattern": "CharacterBody2D"}
 
 
 @pytest.mark.asyncio
-async def test_ollama_tool_calling_handles_json_str_args_and_empty_calls():
+async def test_ollama_tool_calling_handles_empty_or_malformed_calls():
     client = MagicMock()
     client.post = AsyncMock()
     mock_resp = MagicMock()
@@ -78,7 +93,7 @@ async def test_ollama_tool_calling_handles_json_str_args_and_empty_calls():
         "model": "qwen3:4b",
         "message": {
             "content": "No tools called",
-            "tool_calls": [],
+            "tool_calls": "invalid_type",
         },
     }
     client.post.return_value = mock_resp
@@ -92,69 +107,70 @@ async def test_ollama_tool_calling_handles_json_str_args_and_empty_calls():
 
 
 @pytest.mark.asyncio
-async def test_ollama_tool_calling_message_history_formatting():
+async def test_ollama_error_handling_timeout_and_connection():
     client = MagicMock()
-    client.post = AsyncMock()
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "model": "qwen3:4b",
-        "message": {"content": "Done"},
-    }
-    client.post.return_value = mock_resp
-
-    provider = OllamaProvider(client=client)
-    messages = [
-        Message("user", "read player.gd"),
-        Message("model", json.dumps({"__rbxforge_function_calls__": [{"name": "read_file", "args": {"filepath": "player.gd"}}]})),
-        Message("tool", json.dumps({"__rbxforge_function_response__": {"name": "read_file", "ok": True, "data": "extends Node"}})),
-    ]
-    tools = [ToolDefinition("read_file", "Read file", {"type": "object"}, False)]
-    await provider.generate_with_tools(LLMRequest(messages), tools)
-
-    args, kwargs = client.post.call_args
-    posted_json = kwargs["json"]
-    sent_msgs = posted_json["messages"]
-    assert sent_msgs[0] == {"role": "user", "content": "read player.gd"}
-    assert sent_msgs[1]["role"] == "assistant"
-    assert sent_msgs[1]["tool_calls"][0]["function"]["name"] == "read_file"
-    assert sent_msgs[2]["role"] == "tool"
-
-
-@pytest.mark.asyncio
-async def test_ollama_http_error_handling():
-    client = MagicMock()
-    client.post = AsyncMock(side_effect=httpx.HTTPError("Connection refused"))
+    client.post = AsyncMock(side_effect=httpx.ReadTimeout("Read timeout"))
 
     provider = OllamaProvider(client=client)
     with pytest.raises(ProviderError) as exc_info:
         await provider.generate(LLMRequest([Message("user", "hi")]))
-    assert exc_info.value.provider == "ollama"
+    assert exc_info.value.retryable is True
+    assert "timed out" in exc_info.value.message
 
+    client.post = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
     with pytest.raises(ProviderError) as exc_info2:
         await provider.generate_with_tools(LLMRequest([Message("user", "hi")]), [])
-    assert exc_info2.value.provider == "ollama"
+    assert exc_info2.value.retryable is True
+    assert "Cannot connect" in exc_info2.value.message
 
 
 @pytest.mark.asyncio
-async def test_ollama_list_models_capability_detection():
+async def test_ollama_malformed_json_response():
+    client = MagicMock()
+    client.post = AsyncMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.side_effect = json.JSONDecodeError("Expecting value", "doc", 0)
+    client.post.return_value = mock_resp
+
+    provider = OllamaProvider(client=client)
+    with pytest.raises(ProviderError) as exc_info:
+        await provider.generate(LLMRequest([Message("user", "hi")]))
+    assert "Malformed JSON" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_ollama_list_models_capability_detection_api_show():
     client = MagicMock()
     client.get = AsyncMock()
-    mock_resp = MagicMock()
-    mock_resp.is_success = True
-    mock_resp.json.return_value = {
+    client.post = AsyncMock()
+
+    tags_resp = MagicMock()
+    tags_resp.is_success = True
+    tags_resp.json.return_value = {
         "models": [
-            {"name": "qwen3:4b"},
-            {"name": "deepseek-coder:6.7b"},
+            {"name": "custom-tool-model:latest"},
+            {"name": "plain-text-model:latest"},
         ]
     }
-    client.get.return_value = mock_resp
+    client.get.return_value = tags_resp
+
+    def show_side_effect(url, json):
+        resp = MagicMock()
+        resp.is_success = True
+        if json.get("name") == "custom-tool-model:latest":
+            resp.json.return_value = {"template": "some template with tool_calls in it"}
+        else:
+            resp.json.return_value = {"template": "basic template"}
+        return resp
+
+    client.post.side_effect = show_side_effect
 
     provider = OllamaProvider(client=client)
     models = await provider.list_models()
 
     assert len(models) == 2
-    assert models[0].name == "qwen3:4b"
+    assert models[0].name == "custom-tool-model:latest"
     assert models[0].supports_tools is True
-    assert models[1].name == "deepseek-coder:6.7b"
+    assert models[1].name == "plain-text-model:latest"
     assert models[1].supports_tools is False

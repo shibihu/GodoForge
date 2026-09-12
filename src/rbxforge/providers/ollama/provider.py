@@ -10,10 +10,33 @@ from rbxforge.core.tools import ToolCall, ToolDefinition
 class OllamaProvider:
     name = "ollama"
 
-    def __init__(self, base_url: str = "http://127.0.0.1:11434", model: str = "qwen3:4b", client: httpx.AsyncClient | None = None):
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:11434",
+        model: str = "qwen3:4b",
+        client: httpx.AsyncClient | None = None,
+        timeout: float = 60.0,
+        connect_timeout: float = 10.0,
+    ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.client = client
+        self.timeout = httpx.Timeout(timeout, connect=connect_timeout)
+
+    def _handle_exception(self, exc: Exception) -> ProviderError:
+        if isinstance(exc, ProviderError):
+            return exc
+        if isinstance(exc, httpx.TimeoutException):
+            return ProviderError(f"Ollama request timed out: {exc}", self.name, retryable=True)
+        if isinstance(exc, httpx.ConnectError):
+            return ProviderError(f"Cannot connect to Ollama server at {self.base_url}: {exc}", self.name, retryable=True)
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            retryable = status in (429, 500, 502, 503, 504)
+            return ProviderError(f"Ollama HTTP error {status}: {exc.response.text}", self.name, retryable=retryable, status_code=status)
+        if isinstance(exc, (httpx.HTTPError, json.JSONDecodeError)):
+            return ProviderError(f"Ollama error: {exc}", self.name, retryable=True)
+        return ProviderError(f"Unexpected Ollama error: {exc}", self.name, retryable=False)
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         payload = {
@@ -24,38 +47,69 @@ class OllamaProvider:
         }
         if request.max_tokens is not None:
             payload["options"]["num_predict"] = request.max_tokens
-        client = self.client or httpx.AsyncClient(timeout=60)
+        client = self.client or httpx.AsyncClient(timeout=self.timeout)
         try:
             response = await client.post(f"{self.base_url}/api/chat", json=payload)
             if response.status_code >= 400:
-                raise ProviderError(response.text, self.name, response.status_code == 429 or response.status_code >= 500, response.status_code)
-            data = response.json()
+                retryable = response.status_code in (429, 500, 502, 503, 504)
+                raise ProviderError(response.text, self.name, retryable, response.status_code)
+            try:
+                data = response.json()
+            except json.JSONDecodeError as exc:
+                raise ProviderError(f"Malformed JSON response from Ollama: {exc}", self.name, retryable=True) from exc
+            if not isinstance(data, dict):
+                raise ProviderError("Invalid response format from Ollama", self.name, retryable=True)
+            msg = data.get("message") or {}
+            content = msg.get("content") or "" if isinstance(msg, dict) else ""
             return LLMResponse(
-                text=data.get("message", {}).get("content", ""),
+                text=content,
                 provider=self.name,
                 model=data.get("model", payload["model"]),
                 usage=Usage(data.get("prompt_eval_count", 0), data.get("eval_count", 0)),
             )
-        except httpx.HTTPError as exc:
-            raise ProviderError(str(exc), self.name, retryable=True) from exc
+        except Exception as exc:
+            raise self._handle_exception(exc) from exc
         finally:
             if self.client is None:
                 await client.aclose()
 
+    async def _check_model_tool_support(self, client: httpx.AsyncClient, model_name: str) -> bool:
+        """Inspect model metadata via Ollama /api/show, falling back to name heuristics."""
+        tool_keywords = {"qwen", "llama", "mistral", "command-r", "firefunction", "granite", "smollm", "hermes", "nemotron"}
+        lower_name = model_name.lower()
+        heuristic = any(kw in lower_name for kw in tool_keywords)
+
+        try:
+            show_resp = await client.post(f"{self.base_url}/api/show", json={"name": model_name})
+            if show_resp.is_success:
+                info = show_resp.json()
+                template = str(info.get("template") or "").lower()
+                system = str(info.get("system") or "").lower()
+                details = info.get("details") or {}
+                families = [str(f).lower() for f in (details.get("families") or [])]
+                family = str(details.get("family") or "").lower()
+
+                if "tools" in template or ".tool_calls" in template or "tool_call" in template or "tools" in system:
+                    return True
+                if any(kw in family for kw in tool_keywords) or any(kw in f for f in families for kw in tool_keywords):
+                    return True
+        except Exception:
+            pass
+
+        return heuristic
+
     async def list_models(self) -> list[ModelInfo]:
-        client = self.client or httpx.AsyncClient(timeout=10)
+        client = self.client or httpx.AsyncClient(timeout=self.timeout)
         try:
             response = await client.get(f"{self.base_url}/api/tags")
             if not response.is_success:
                 return []
             data = response.json()
             models = []
-            tool_keywords = {"qwen", "llama", "mistral", "command-r", "firefunction", "granite", "smollm", "hermes", "nemotron"}
             for item in data.get("models", []):
                 name = item.get("name", "")
                 if name:
-                    lower_name = name.lower()
-                    supports_tools = any(kw in lower_name for kw in tool_keywords)
+                    supports_tools = await self._check_model_tool_support(client, name)
                     score = 80.0 if supports_tools else 60.0
                     models.append(
                         ModelInfo(
@@ -67,7 +121,7 @@ class OllamaProvider:
                         )
                     )
             return models
-        except httpx.HTTPError:
+        except Exception:
             return []
         finally:
             if self.client is None:
@@ -128,31 +182,48 @@ class OllamaProvider:
         if request.max_tokens is not None:
             payload["options"]["num_predict"] = request.max_tokens
 
-        client = self.client or httpx.AsyncClient(timeout=60)
+        client = self.client or httpx.AsyncClient(timeout=self.timeout)
         try:
             response = await client.post(f"{self.base_url}/api/chat", json=payload)
             if response.status_code >= 400:
-                raise ProviderError(response.text, self.name, response.status_code in (429, 500, 502, 503, 504), response.status_code)
-            data = response.json()
-            message = data.get("message", {})
+                retryable = response.status_code in (429, 500, 502, 503, 504)
+                raise ProviderError(response.text, self.name, retryable, response.status_code)
+            try:
+                data = response.json()
+            except json.JSONDecodeError as exc:
+                raise ProviderError(f"Malformed JSON response from Ollama: {exc}", self.name, retryable=True) from exc
+
+            if not isinstance(data, dict):
+                raise ProviderError("Invalid response format from Ollama", self.name, retryable=True)
+
+            message = data.get("message") or {}
+            if not isinstance(message, dict):
+                message = {}
             content = message.get("content") or ""
 
             tool_calls = []
-            for tc in message.get("tool_calls", []):
-                fn = tc.get("function", {})
-                args = fn.get("arguments", {})
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except Exception:
+            tc_list = message.get("tool_calls")
+            if isinstance(tc_list, list):
+                for tc in tc_list:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") or {}
+                    if not isinstance(fn, dict):
+                        fn = {}
+                    fn_name = fn.get("name") or ""
+                    args = fn.get("arguments") or {}
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except Exception:
+                            args = {}
+                    if not isinstance(args, dict):
                         args = {}
-                elif not isinstance(args, dict):
-                    args = {}
-                tool_calls.append(ToolCall(fn.get("name", ""), args, tc.get("id")))
+                    tool_calls.append(ToolCall(fn_name, args, tc.get("id")))
 
             return ToolModelResponse(text=content, tool_calls=tool_calls)
-        except httpx.HTTPError as exc:
-            raise ProviderError(str(exc), self.name, retryable=True) from exc
+        except Exception as exc:
+            raise self._handle_exception(exc) from exc
         finally:
             if self.client is None:
                 await client.aclose()

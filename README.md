@@ -53,6 +53,8 @@ Phase 2.5 introduces the Provider Hub to manage multiple LLM backends cleanly wi
 - `GROQ_MODEL`: Default model for Groq.
 - `OPENROUTER_API_KEY`: API key for OpenRouter LLM provider.
 - `OPENROUTER_MODEL`: Default model for OpenRouter.
+- `RBXFORGE_LLM_TIMEOUT` (default: `60.0`): Maximum LLM request timeout in seconds. Local Ollama models running on low-power hardware can take longer and may require a higher value (e.g. `120.0` or `180.0`).
+- `RBXFORGE_LLM_CONNECT_TIMEOUT` (default: `10.0`): Maximum HTTP connection establishment timeout in seconds.
 
 ### CLI Options
 - `--provider {auto,ollama,gemini,groq,openrouter}`: Select AI provider or auto mode.

@@ -9,10 +9,18 @@ from rbxforge.core.tools import ToolCall, ToolDefinition
 class GroqProvider:
     name = "groq"
 
-    def __init__(self, api_key: str, model: str = "", client: httpx.AsyncClient | None = None):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "",
+        client: httpx.AsyncClient | None = None,
+        timeout: float = 60.0,
+        connect_timeout: float = 10.0,
+    ):
         self.api_key = api_key
         self.model = model
         self.client = client
+        self.timeout = httpx.Timeout(timeout, connect=connect_timeout)
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -32,7 +40,7 @@ class GroqProvider:
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
 
-        client = self.client or httpx.AsyncClient(timeout=60)
+        client = self.client or httpx.AsyncClient(timeout=self.timeout)
         try:
             response = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -165,7 +173,7 @@ class GroqProvider:
     async def health(self) -> bool:
         if not self.api_key:
             return False
-        client = self.client or httpx.AsyncClient(timeout=10)
+        client = self.client or httpx.AsyncClient(timeout=self.timeout)
         try:
             response = await client.get("https://api.groq.com/openai/v1/models", headers=self._headers())
             return response.is_success
