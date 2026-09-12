@@ -145,7 +145,7 @@ class ProviderHub:
             best = await self.select_best_model(require_tools=True)
             if best:
                 candidates.append((best[0], model or best[1]))
-            for name in ["gemini", "groq", "openrouter"]:
+            for name in ["gemini", "groq", "openrouter", "ollama"]:
                 p = self.providers.get(name)
                 if p and hasattr(p, "generate_with_tools") and (not candidates or p.name != candidates[0][0].name):
                     candidates.append((p, model or getattr(p, "model", None)))
@@ -156,7 +156,7 @@ class ProviderHub:
             if not hasattr(p, "generate_with_tools"):
                 raise ProviderError(f"Provider {provider} does not support tool calling", provider)
             candidates.append((p, model or getattr(p, "model", None)))
-            for name in ["gemini", "groq", "openrouter"]:
+            for name in ["gemini", "groq", "openrouter", "ollama"]:
                 other = self.providers.get(name)
                 if other and hasattr(other, "generate_with_tools") and other.name != p.name:
                     candidates.append((other, getattr(other, "model", None)))

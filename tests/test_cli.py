@@ -172,3 +172,27 @@ def test_run_uses_gemini_tool_agent_when_available(tmp_path, monkeypatch):
     monkeypatch.setattr("rbxforge.main.Settings.from_env", classmethod(lambda cls: FakeSettings()))
     monkeypatch.setattr("rbxforge.main.build_providers", lambda settings: {"gemini": FakeGemini()})
     assert run(tmp_path, "inspect player", "moderate", None) == "read complete"
+
+
+def test_run_uses_ollama_tool_agent_when_requested(tmp_path, monkeypatch):
+    (tmp_path / "project.godot").write_text('[application]\nconfig/name="Demo"\n', encoding="utf-8")
+
+    class FakeOllama:
+        name = "ollama"
+        async def health(self):
+            return True
+        async def list_models(self):
+            from rbxforge.core.llm.models import CostCategory, ModelInfo
+            return [ModelInfo("qwen3:4b", "ollama", CostCategory.FREE, True, 80.0)]
+        async def generate_with_tools(self, request, tools):
+            from rbxforge.core.agent import ToolModelResponse
+            return ToolModelResponse(text="ollama tool agent executed")
+
+    class FakeSettings:
+        max_tool_calls = 12
+        default_complexity = TaskComplexity.MODERATE
+        allow_paid_models = False
+
+    monkeypatch.setattr("rbxforge.main.Settings.from_env", classmethod(lambda cls: FakeSettings()))
+    monkeypatch.setattr("rbxforge.main.build_providers", lambda settings: {"ollama": FakeOllama()})
+    assert run(tmp_path, "inspect player", "moderate", "ollama") == "ollama tool agent executed"
