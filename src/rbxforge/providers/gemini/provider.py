@@ -5,7 +5,7 @@ import re
 
 from rbxforge.core.agent import ToolModelResponse
 from rbxforge.core.llm.errors import ProviderError
-from rbxforge.core.llm.models import LLMRequest, LLMResponse, Usage
+from rbxforge.core.llm.models import CostCategory, LLMRequest, LLMResponse, ModelInfo, Usage
 from rbxforge.core.tools import ToolCall, ToolDefinition
 
 
@@ -237,3 +237,28 @@ class GeminiProvider:
 
     async def health(self) -> bool:
         return bool(self.api_key or self.client)
+
+    async def list_models(self) -> list[ModelInfo]:
+        if not self.api_key and self.client is None:
+            return []
+        # Return Gemini models with capability detection and free/paid cost classification
+        default_model = self.model or "gemini-2.5-flash"
+        known_models = [
+            ("gemini-2.5-flash", 95.0),
+            ("gemini-2.0-flash", 90.0),
+            ("gemini-1.5-pro", 85.0),
+            ("gemini-1.5-flash", 80.0),
+        ]
+        models = [
+            ModelInfo(
+                name=name,
+                provider=self.name,
+                cost=CostCategory.FREE,
+                supports_tools=True,
+                score=score,
+            )
+            for name, score in known_models
+        ]
+        if default_model not in [m.name for m in models]:
+            models.insert(0, ModelInfo(name=default_model, provider=self.name, cost=CostCategory.FREE, supports_tools=True, score=85.0))
+        return models

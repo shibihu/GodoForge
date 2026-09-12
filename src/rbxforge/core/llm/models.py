@@ -8,6 +8,21 @@ class TaskComplexity(str, Enum):
     COMPLEX = "complex"
 
 
+class CostCategory(str, Enum):
+    FREE = "free"
+    PAID = "paid"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class ModelInfo:
+    name: str
+    provider: str
+    cost: CostCategory = CostCategory.UNKNOWN
+    supports_tools: bool = False
+    score: float = 0.0
+
+
 @dataclass(frozen=True)
 class Message:
     role: str
